@@ -31,6 +31,12 @@ def test_order_book():
     print("After limit sell 20 @ 92:")
     ob.display()
 
+    # Cancel 10 @ 95
+    ob.cancel_order(95, 10, is_bid=True)
+    print("After cancel 10 @ 95:")
+    ob.display()
+    print()
+
 
 if __name__ == "__main__":
     test_order_book()

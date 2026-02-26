@@ -6,13 +6,14 @@ class Level:
     quantity: float
 
 class OrderBook:
-    def __init__(self):
+    def __init__(self, levels: int = 10):
+        self.levels = levels
         self.bids = []
         self.asks = []
 
-    def init_dummy_order_book(self, levels: int = 10, price: float = 100, quantity: float = 100):
-        self.bids = [Level(price - (i + 1), quantity//levels) for i in range(levels)]
-        self.asks = [Level(price + (i + 1), quantity//levels) for i in range(levels)]
+    def init_dummy_order_book(self, price: float = 100, quantity: float = 100):
+        self.bids = [Level(price - (i + 1), quantity//self.levels) for i in range(self.levels)]
+        self.asks = [Level(price + (i + 1), quantity//self.levels) for i in range(self.levels)]
 
     def display(self):
         print(f"{'BIDS':>18} | {'ASKS':<18}")
@@ -50,6 +51,7 @@ class OrderBook:
 
     def add_limit_order(self, price: float, quantity: float, is_bid: bool):
         if is_bid:
+            # Hit asks
             while price > self.get_best_ask().price and quantity > 0:
                 quantity_taken = min(quantity, self.get_best_ask().quantity)
                 quantity -= quantity_taken
@@ -57,6 +59,7 @@ class OrderBook:
                 if self.get_best_ask().quantity == 0:
                     self.asks.pop(0)
             if quantity > 0:
+                # Add to bids
                 for i in range(len(self.bids)):
                     if self.bids[i].price < price:
                         self.bids.insert(i, Level(price, quantity))
@@ -67,7 +70,11 @@ class OrderBook:
                     elif i == len(self.bids) - 1:
                         self.bids.append(Level(price, quantity))
                         break
+                # Trim bids to number of levels
+                while self.bids.length > self.levels:
+                    self.bids.pop(-1)
         else:
+            # Hit bids
             while price < self.get_best_bid().price and quantity > 0:
                 quantity_taken = min(quantity, self.get_best_bid().quantity)
                 quantity -= quantity_taken
@@ -75,6 +82,7 @@ class OrderBook:
                 if self.get_best_bid().quantity == 0:
                     self.bids.pop(0)
             if quantity > 0:
+                # Add to asks
                 for i in range(len(self.asks)):
                     if self.asks[i].price > price:
                         self.asks.insert(i, Level(price, quantity))
@@ -85,6 +93,9 @@ class OrderBook:
                     elif i == len(self.asks) - 1:
                         self.asks.append(Level(price, quantity))
                         break
+                # Trim bids to number of levels
+                while self.asks.length > self.levels:
+                    self.asks.pop(-1)
     
     def add_market_order(self, quantity: float, is_bid: bool):
         if is_bid:
@@ -101,3 +112,15 @@ class OrderBook:
                 self.bids[0].quantity -= quantity_taken
                 if self.get_best_bid().quantity == 0:
                     self.bids.pop(0)
+
+    def cancel_order(self, price: float, quantity: float, is_bid: bool):
+        if is_bid:
+            for level in self.bids:
+                if level.price == price:
+                    level.quantity = max(0, level.quantity - quantity)
+                    break
+        else:
+            for level in self.asks:
+                if level.price == price:
+                    level.quantity = max(0, level.quantity - quantity)
+                    break

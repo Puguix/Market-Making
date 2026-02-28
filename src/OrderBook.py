@@ -1,15 +1,17 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-@dataclass
+@dataclass(slots=True)
 class Level:
     price: float
     quantity: float
 
+
+@dataclass(slots=True)
 class OrderBook:
-    def __init__(self, levels: int = 10):
-        self.levels = levels
-        self.bids = []
-        self.asks = []
+
+    bids: list[Level] = field(default_factory=list)
+    asks: list[Level] = field(default_factory=list)
+    levels: int = 10
 
     def init_dummy_order_book(self, price: float = 100, quantity: float = 100):
         self.bids = [Level(price - (i + 1), quantity//self.levels) for i in range(self.levels)]

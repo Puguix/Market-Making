@@ -5,6 +5,7 @@ class Level:
     price: float
     quantity: float
 
+# passer en pydantic pour data validation ?
 
 @dataclass(slots=True)
 class OrderBook:
@@ -51,6 +52,8 @@ class OrderBook:
     def get_spread(self) -> float:
         return self.get_best_ask().price - self.get_best_bid().price
 
+
+    # en arg -> Level + enum for bid/ask ?
     def add_limit_order(self, price: float, quantity: float, is_bid: bool):
         if is_bid:
             # Hit asks
@@ -99,6 +102,7 @@ class OrderBook:
                 while self.asks.length > self.levels:
                     self.asks.pop(-1)
     
+    # faire une class Market Order (éviter les booléens) ?
     def add_market_order(self, quantity: float, is_bid: bool):
         if is_bid:
             while quantity > 0:

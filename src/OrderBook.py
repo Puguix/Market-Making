@@ -2,10 +2,19 @@ from dataclasses import dataclass
 
 @dataclass
 class Level:
+    """
+    A level on the order book.
+    Price and quantity of the level.
+    """
     price: float
     quantity: float
 
 class OrderBook:
+    """
+    An order book for a single asset.
+    Contains bids and asks, sorted by price.
+    Levels are the number of price levels to keep in the order book.
+    """
     def __init__(self, levels: int = 10):
         self.levels = levels
         self.bids = []

@@ -62,7 +62,7 @@ class OrderBook:
         self.bids: SortedDict = SortedDict(lambda p: -p)
         self._orders: dict[str, Order] = {}  # id → order
 
-    def add_limit(self, order: Order) -> list[tuple[Order, float]]:
+    def add_limit_order(self, order: Order) -> list[tuple[Order, float]]:
         fills = []
         if order.side == 'bid':
             fills = self._match(order, self.asks, lambda ask_p: ask_p <= order.price)
@@ -76,7 +76,7 @@ class OrderBook:
 
     def add_market_order(self, side: str, qty: float) -> list[tuple[Order, float]]:
         dummy = Order("__market__", side, float('inf') if side == 'bid' else 0.0, qty)
-        return self.add_limit(dummy)
+        return self.add_limit_order(dummy)
 
     def _insert(self, order: Order, side: SortedDict):
         if order.price not in side:
@@ -137,7 +137,7 @@ class OrderBook:
     def print_book(self, depth: int = 5):
         snap = self.snapshot(depth)
         print(f"\n{'─'*40}")
-        print(f"  {self.symbol} | mid={snap['mid']:.5f} | spread={snap['spread']:.5f}")
+        print(f"mid={snap['mid']:.5f} | spread={snap['spread']:.5f}")
         print(f"{'─'*40}")
         print(f"  {'PRICE':>12}  {'QTY':>14}  SIDE")
         print(f"{'─'*40}")
@@ -155,19 +155,19 @@ if __name__ == "__main__":
     ob = OrderBook()
 
     # Populate bids
-    ob.add_limit(Order("B1", "bid", 1.08500, 1_000_000))
-    ob.add_limit(Order("B2", "bid", 1.08500,   500_000))
-    ob.add_limit(Order("B3", "bid", 1.08480, 2_000_000))
-    ob.add_limit(Order("B4", "bid", 1.08460, 3_000_000))
-    ob.add_limit(Order("B5", "bid", 1.08440, 1_500_000))
-    ob.add_limit(Order("B6", "bid", 1.08420, 2_500_000))
+    ob.add_limit_order(Order("B1", "bid", 1.08500, 1_000_000))
+    ob.add_limit_order(Order("B2", "bid", 1.08500,   500_000))
+    ob.add_limit_order(Order("B3", "bid", 1.08480, 2_000_000))
+    ob.add_limit_order(Order("B4", "bid", 1.08460, 3_000_000))
+    ob.add_limit_order(Order("B5", "bid", 1.08440, 1_500_000))
+    ob.add_limit_order(Order("B6", "bid", 1.08420, 2_500_000))
 
     # Populate asks
-    ob.add_limit(Order("A1", "ask", 1.08520,   800_000))
-    ob.add_limit(Order("A2", "ask", 1.08540, 1_500_000))
-    ob.add_limit(Order("A3", "ask", 1.08560, 2_000_000))
-    ob.add_limit(Order("A4", "ask", 1.08580, 1_000_000))
-    ob.add_limit(Order("A5", "ask", 1.08600, 3_000_000))
+    ob.add_limit_order(Order("A1", "ask", 1.08520,   800_000))
+    ob.add_limit_order(Order("A2", "ask", 1.08540, 1_500_000))
+    ob.add_limit_order(Order("A3", "ask", 1.08560, 2_000_000))
+    ob.add_limit_order(Order("A4", "ask", 1.08580, 1_000_000))
+    ob.add_limit_order(Order("A5", "ask", 1.08600, 3_000_000))
 
     print("=== Book initial ===")
     ob.print_book()
@@ -179,14 +179,14 @@ if __name__ == "__main__":
 
     # Limit order that matches B1 (FIFO : B1 before B2)
     print(">>> Limit ask 1.08500 pour 900k (matche B1 en FIFO)")
-    fills = ob.add_limit(Order("X1", "ask", 1.08500, 900_000))
+    fills = ob.add_limit_order(Order("X1", "ask", 1.08500, 900_000))
     for passive, qty in fills:
         print(f"    fill: order {passive.order_id} @ {passive.price:.5f} x {qty:,.0f}")
     ob.print_book()
 
     # Market order buy
     print(">>> Market buy 2M")
-    fills = ob.add_market("bid", 2_000_000)
+    fills = ob.add_market_order("bid", 2_000_000)
     for passive, qty in fills:
         print(f"    fill: order {passive.order_id} @ {passive.price:.5f} x {qty:,.0f}")
     ob.print_book()

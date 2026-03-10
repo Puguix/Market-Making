@@ -1,8 +1,11 @@
 from collections import deque
 from sortedcontainers import SortedDict
 import time
+import math
+import random
 from dataclasses import dataclass, field
 
+from PoissonSimulation import ArrivalIntensity, PoissonGenerator
 
 @dataclass
 class Order:
@@ -129,6 +132,98 @@ class OrderBook:
         if self.best_bid and self.best_ask:
             return (self.best_bid + self.best_ask) / 2
 
+    def _shift_prices(self, delta: float):
+        if not delta:
+            return
+
+        def shift_side(side_dict: SortedDict, key_func=None) -> SortedDict:
+            if not side_dict:
+                return side_dict
+            items = list(side_dict.items())
+            new_side = SortedDict(key_func) if key_func else SortedDict()
+            for price, level in items:
+                new_price = price + delta
+                for o in level.queue:
+                    o.price = new_price
+                if new_price in new_side:
+                    target_level: PriceLevel = new_side[new_price]
+                    target_level.queue.extend(level.queue)
+                    target_level.total_qty += level.total_qty
+                else:
+                    new_side[new_price] = level
+            return new_side
+
+        self.bids = shift_side(self.bids, lambda p: -p)
+        self.asks = shift_side(self.asks)
+
+    def evolve_one_step(
+        self,
+        new_mid: float,
+        dt: float,
+        lambda_a0: float,
+        alpha: float,
+        theta: float,
+        lambda_mo: float,
+        v_unit: float,
+        mo_buy_prob: float = 0.5,
+    ):
+        """
+        Discrete-time evolution of the synthetic order book around a given mid-price,
+        following the queue dynamics of Section 2.2.
+        """
+        if self.best_bid is None or self.best_ask is None:
+            return
+
+        current_mid = self.mid
+        if current_mid is not None and new_mid is not None:
+            delta_mid = new_mid - current_mid
+            if delta_mid:
+                self._shift_prices(delta_mid)
+
+        # Limit order arrivals and cancellations at each level
+        p_cancel = 1.0 - math.exp(-theta * dt)
+
+        for side_name, side_dict in (("bid", self.bids), ("ask", self.asks)):
+            for price, level in list(side_dict.items()):
+                # Limit order arrivals λ_a(δ) = λ_a0 * exp(-α δ), δ in pips,
+                # simulated with a Poisson generator as in PoissonSimulation.
+                delta_pips = abs(price - new_mid) * 10_000.0
+                arr_int = ArrivalIntensity(
+                    spread=delta_pips,
+                    alpha=alpha,
+                    lambda_0=lambda_a0 * dt,  # expected arrivals over this dt at δ=0
+                )
+                n_arrivals = PoissonGenerator(arr_int).generate()
+                for _ in range(n_arrivals):
+                    order_id = f"sim_LO_{side_name}_{time.time_ns()}"
+                    order = Order(
+                        order_id=order_id,
+                        side=side_name,
+                        price=price,
+                        quantity=v_unit,
+                    )
+                    self._insert(order, side_dict)
+
+                # Cancellations: each resting order independently cancelled with p_cancel
+                to_cancel = []
+                for o in list(level.queue):
+                    if random.random() < p_cancel:
+                        to_cancel.append(o.order_id)
+                for oid in to_cancel:
+                    self.cancel(oid)
+
+        # Market order arrivals at best levels with intensity λ_MO,
+        # also simulated with the Poisson generator.
+        mo_int = ArrivalIntensity(
+            spread=0.0,
+            alpha=0.0,
+            lambda_0=lambda_mo * dt,
+        )
+        n_mo = PoissonGenerator(mo_int).generate()
+        for _ in range(n_mo):
+            side = "bid" if random.random() < mo_buy_prob else "ask"
+            self.add_market_order(side, v_unit)
+
     def snapshot(self, depth: int = 5) -> dict:
         bids = [(p, self.bids[p].total_qty) for p in list(self.bids)[:depth]]
         asks = [(p, self.asks[p].total_qty) for p in list(self.asks)[:depth]]
@@ -149,9 +244,7 @@ class OrderBook:
         print(f"{'─'*40}\n")
 
 
-# Test
-if __name__ == "__main__":
-
+def test_basic():
     ob = OrderBook()
 
     # Populate bids
@@ -190,3 +283,61 @@ if __name__ == "__main__":
     for passive, qty in fills:
         print(f"    fill: order {passive.order_id} @ {passive.price:.5f} x {qty:,.0f}")
     ob.print_book()
+
+
+def test_advanced():
+    random.seed(42)
+
+    ob = OrderBook()
+    base_mid = 1.08500
+    tick = 0.0001  # 1 pip
+
+    # Build a deep book: many levels on each side around base_mid
+    level_count = 50
+    for i in range(1, level_count + 1):
+        bid_price = base_mid - i * tick
+        ask_price = base_mid + i * tick
+
+        bid_qty = random.randint(1, 10) * 100_000
+        ask_qty = random.randint(1, 10) * 100_000
+
+        ob.add_limit_order(Order(f"HB_B{i}", "bid", bid_price, bid_qty))
+        ob.add_limit_order(Order(f"HB_A{i}", "ask", ask_price, ask_qty))
+
+    print("=== Heavy book initial snapshot ===")
+    ob.print_book(depth=10)
+
+    # Simulate several evolution steps with a slowly drifting mid-price
+    dt = 0.01
+    lambda_a0 = 5.0
+    alpha = 0.05
+    theta = 0.1
+    lambda_mo = 2.0
+    v_unit = 100_000
+
+    new_mid = base_mid
+    for step in range(100):
+        # Small random walk in mid-price (for testing)
+        new_mid += 0.00001 * random.gauss(0.0, 1.0)
+        ob.evolve_one_step(
+            new_mid=new_mid,
+            dt=dt,
+            lambda_a0=lambda_a0,
+            alpha=alpha,
+            theta=theta,
+            lambda_mo=lambda_mo,
+            v_unit=v_unit,
+            mo_buy_prob=0.5,
+        )
+        if (step + 1) % 25 == 0:
+            print(f"=== Snapshot after {step + 1} steps ===")
+            ob.print_book(depth=10)
+
+
+if __name__ == "__main__":
+    print(">>> Running basic order book test")
+    # test_basic()
+
+    print(">>> Running advanced book evolution test")
+    test_advanced()
+

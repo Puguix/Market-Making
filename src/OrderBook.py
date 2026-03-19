@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 
 from PoissonSimulation import ArrivalIntensity, PoissonGenerator
 
+
+
+# %%%%%%%%%%%%%%%% OBJECTS %%%%%%%%%%%%%%%%%%%
+
 @dataclass
 class Order:
     order_id: str
@@ -17,13 +21,22 @@ class Order:
 
 
 class PriceLevel:
-    """FIFO for orders at a certain price — price-time priority."""
+    """
+    Price level implementation. Tracking order at each price level and their coming order on FIFO base.
+
+    Attributes:
+        queue : queue of oders
+        total_qty: the total quantity of orders at the price level
+    """
 
     def __init__(self):
         self.queue: deque[Order] = deque()
         self.total_qty: float = 0.0
 
-    def add(self, order: Order):
+    def add(self, order: Order)->None:
+        """
+        Adding an Order to the price level.
+        """
         self.queue.append(order)
         self.total_qty += order.quantity
 
@@ -36,9 +49,18 @@ class PriceLevel:
         return False
 
     def consume(self, qty: float) -> list[tuple[Order, float]]:
-        """Fills orders by priority (head first) until qty is empty. Return fills"""
+        """
+        Method that consume a certain quatity at this price level by FIFO.
+
+        Parameters:
+            qty (float): quatity of order to consume at this price level.
+        
+        Returns:
+            a List of tuples containing an Order and the filled quantity for each.
+        """
         fills = []
         remaining = qty
+        # as long as there is order at the price level and the quantity is not filled.
         while self.queue and remaining > 0:
             head = self.queue[0]
             fill_qty = min(head.quantity, remaining)
@@ -46,6 +68,8 @@ class PriceLevel:
             remaining -= fill_qty
             head.quantity -= fill_qty
             self.total_qty -= fill_qty
+
+            # if No more quantity for this order, go to next in the queue
             if head.quantity <= 0:
                 self.queue.popleft()
         return fills
@@ -56,15 +80,73 @@ class PriceLevel:
 
 class OrderBook:
     """
-    Asks : SortedDict: price -> PriceLevel (best ask in head)
-    Bids : SortedDict: price -> PriceLevel (best bid in head)
+    A class for Order Book Implementation.
+
+    Attributes:
+        asks (SortedDict): A dictionnary of asks oders always sorted.
+        bids (SortedDict): The same
     """
 
     def __init__(self):
-        self.asks: SortedDict = SortedDict()
-        self.bids: SortedDict = SortedDict(lambda p: -p)
+        self.asks: SortedDict = SortedDict() # empty sorted dict
+        self.bids: SortedDict = SortedDict(lambda p: -p) # invertly sorted dict (we want to see higher prices first for bids)
         self._orders: dict[str, Order] = {}  # id → order
 
+    # === protected methods ===
+    def _insert(self, order: Order, side: SortedDict[float, PriceLevel])->None:
+        """
+        Insert an order (side) in the order book by modifying directly "side"
+        """
+        if order.price not in side:
+            side[order.price] = PriceLevel()
+        side[order.price].add(order)
+        self._orders[order.order_id] = order
+
+    def _match(self, aggressor: Order, opposite: SortedDict, crossable) -> list:
+        """
+        
+        """
+        fills = []
+        # loop on orderbook prices (keys)
+        for price in list(opposite.keys()):
+            if not crossable(price) or aggressor.quantity <= 0:
+                break
+            level: PriceLevel = opposite[price]
+            level_fills = level.consume(aggressor.quantity)
+            for (passive, qty) in level_fills:
+                aggressor.quantity -= qty
+                fills.append((passive, qty))
+                if passive.quantity <= 0:
+                    self._orders.pop(passive.order_id, None)
+            if not level:
+                del opposite[price]
+        return fills
+ 
+    def _shift_prices(self, delta: float)->None:
+        if not delta:
+            return
+
+        def shift_side(side_dict: SortedDict, key_func=None) -> SortedDict:
+            if not side_dict:
+                return side_dict
+            items = list(side_dict.items())
+            new_side = SortedDict(key_func) if key_func else SortedDict()
+            for price, level in items:
+                new_price = price + delta
+                for o in level.queue:
+                    o.price = new_price
+                if new_price in new_side:
+                    target_level: PriceLevel = new_side[new_price]
+                    target_level.queue.extend(level.queue)
+                    target_level.total_qty += level.total_qty
+                else:
+                    new_side[new_price] = level
+            return new_side
+
+        self.bids = shift_side(self.bids, lambda p: -p)
+        self.asks = shift_side(self.asks)
+
+    # === Classic methods ===
     def add_limit_order(self, order: Order) -> list[tuple[Order, float]]:
         fills = []
         if order.side == 'bid':
@@ -80,28 +162,6 @@ class OrderBook:
     def add_market_order(self, side: str, qty: float) -> list[tuple[Order, float]]:
         dummy = Order("__market__", side, float('inf') if side == 'bid' else 0.0, qty)
         return self.add_limit_order(dummy)
-
-    def _insert(self, order: Order, side: SortedDict):
-        if order.price not in side:
-            side[order.price] = PriceLevel()
-        side[order.price].add(order)
-        self._orders[order.order_id] = order
-
-    def _match(self, aggressor: Order, opposite: SortedDict, crossable) -> list:
-        fills = []
-        for price in list(opposite.keys()):
-            if not crossable(price) or aggressor.quantity <= 0:
-                break
-            level: PriceLevel = opposite[price]
-            level_fills = level.consume(aggressor.quantity)
-            for (passive, qty) in level_fills:
-                aggressor.quantity -= qty
-                fills.append((passive, qty))
-                if passive.quantity <= 0:
-                    self._orders.pop(passive.order_id, None)
-            if not level:
-                del opposite[price]
-        return fills
 
     def cancel(self, order_id: str) -> bool:
         order = self._orders.pop(order_id, None)
@@ -131,30 +191,6 @@ class OrderBook:
     def mid(self):
         if self.best_bid and self.best_ask:
             return (self.best_bid + self.best_ask) / 2
-
-    def _shift_prices(self, delta: float):
-        if not delta:
-            return
-
-        def shift_side(side_dict: SortedDict, key_func=None) -> SortedDict:
-            if not side_dict:
-                return side_dict
-            items = list(side_dict.items())
-            new_side = SortedDict(key_func) if key_func else SortedDict()
-            for price, level in items:
-                new_price = price + delta
-                for o in level.queue:
-                    o.price = new_price
-                if new_price in new_side:
-                    target_level: PriceLevel = new_side[new_price]
-                    target_level.queue.extend(level.queue)
-                    target_level.total_qty += level.total_qty
-                else:
-                    new_side[new_price] = level
-            return new_side
-
-        self.bids = shift_side(self.bids, lambda p: -p)
-        self.asks = shift_side(self.asks)
 
     def evolve_one_step(
         self,
@@ -243,7 +279,7 @@ class OrderBook:
             print(f"  {price:>12.5f}  {qty:>14,.0f}  BID")
         print(f"{'─'*40}\n")
 
-
+# %%%%%%%%%%%%% Func %%%%%%%%%%%%%%
 def test_basic():
     ob = OrderBook()
 
@@ -334,6 +370,9 @@ def test_advanced():
             ob.print_book(depth=10)
 
 
+
+
+# %%%%%%% TEST %%%%%%%%%%
 if __name__ == "__main__":
     print(">>> Running basic order book test")
     # test_basic()

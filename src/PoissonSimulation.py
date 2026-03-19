@@ -3,9 +3,32 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+# %%%%%%%%%%%%%%%% RANDOM GENERATOR GLOBAL %%%%%%%%%%%%%%%%%
+class RandomGenerator(ABC):
+
+    """
+    Random Generator Class for any probability distribution.
+    """
+
+    @abstractmethod
+    def generate(self, *args, **kwargs):
+        """
+        Abstract method to generate 1 sample of a random number.
+        """
+        pass
+
 # %%%%%%%%%%%%%%%% INTENSITY OF ORDERS ARRIVAL %%%%%%%%%%%%%%%%%
 @dataclass
 class ArrivalIntensity:
+    
+    """
+    DataClass representing an order arrival intensity.
+
+    Attributes:
+        spread (float>0): the order book spread (mid to reference point).
+        alpha (float>0): exponential parameter
+        lambda_0 (float>0): multiplier parameter
+    """
 
     spread:float = field(default=0.01)
     alpha:float = field(default=0.1)
@@ -16,15 +39,15 @@ class ArrivalIntensity:
         return self.lambda_0 * np.exp(-self.alpha*self.spread)
 
 
-# %%%%%%%%%%%%%%%% RANDOM GENERATOR GLOBAL %%%%%%%%%%%%%%%%%
-class RandomGenerator(ABC):
-
-    @abstractmethod
-    def generate(self, *args, **kwargs):
-        pass
-
 # %%%%%%%%%%%%%%%% POISSON GENERATOR %%%%%%%%%%%%%%%%%
 class PoissonGenerator(RandomGenerator):
+
+    """
+    A class that implement Poisson Random Number generation from a specified Arrival Intensity.
+
+    Attributes:
+        _lambda: the arrival intensity of order.
+    """
 
     __slots__ = ["_lambda"]
 

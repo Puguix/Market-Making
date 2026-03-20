@@ -102,18 +102,26 @@ class OrderBook:
         side[order.price].add(order)
         self._orders[order.order_id] = order
 
-    def _match(self, aggressor: Order, opposite: SortedDict, crossable) -> list:
+    def _match(self, aggressor: Order, opposite: SortedDict, crossable) -> list: # crossable is a function that return a boolean
         """
-        
+        If the limit order is crossing the opposite side, we match the LO with the other LO to execute the trades.
+
+        Attributes:
+            aggressor: the LO
+            opposite: SortedDict of bids or ask orders in the order book
+            crossable: a function that return true if our order cross the opposite side
+
+        Return:
+            A list of tuples containing the orders at which we executed our aggressor LO and the quantity.
         """
         fills = []
         # loop on orderbook prices (keys)
         for price in list(opposite.keys()):
-            if not crossable(price) or aggressor.quantity <= 0:
+            if not crossable(price) or aggressor.quantity <= 0: # if crossable we break, if all qty filled we break
                 break
             level: PriceLevel = opposite[price]
-            level_fills = level.consume(aggressor.quantity)
-            for (passive, qty) in level_fills:
+            level_fills = level.consume(aggressor.quantity) # return (Orders : filled qty at each order, for this price level)
+            for (passive, qty) in level_fills: # (passive= the orders, qty= quantity filled)
                 aggressor.quantity -= qty
                 fills.append((passive, qty))
                 if passive.quantity <= 0:
@@ -123,6 +131,10 @@ class OrderBook:
         return fills
  
     def _shift_prices(self, delta: float)->None:
+        """
+        Method that shift the order book for a certain delta in the mid price variation.
+        """
+
         if not delta:
             return
 
@@ -148,11 +160,21 @@ class OrderBook:
 
     # === Classic methods ===
     def add_limit_order(self, order: Order) -> list[tuple[Order, float]]:
+
+        """
+        A method that enable to add an order in the order book.
+
+        Attributes:
+            order (Oder): The LO you want to add in the order book.
+
+        Returns:
+            The filled order if any (if there is no crossable order it should return an empty list)
+        """
         fills = []
         if order.side == 'bid':
-            fills = self._match(order, self.asks, lambda ask_p: ask_p <= order.price)
-            if order.quantity > 0:
-                self._insert(order, self.bids)
+            fills = self._match(order, self.asks, lambda ask_p: ask_p <= order.price) # checking if there are prices to cross
+            if order.quantity > 0: # still order to place ?
+                self._insert(order, self.bids) # insert bid
         else:
             fills = self._match(order, self.bids, lambda bid_p: bid_p >= order.price)
             if order.quantity > 0:
@@ -161,7 +183,7 @@ class OrderBook:
 
     def add_market_order(self, side: str, qty: float) -> list[tuple[Order, float]]:
         dummy = Order("__market__", side, float('inf') if side == 'bid' else 0.0, qty)
-        return self.add_limit_order(dummy)
+        return self.add_limit_order(dummy) # place limit order with no limit (inf)
 
     def cancel(self, order_id: str) -> bool:
         order = self._orders.pop(order_id, None)
@@ -205,12 +227,18 @@ class OrderBook:
     ):
         """
         Discrete-time evolution of the synthetic order book around a given mid-price,
-        following the queue dynamics of Section 2.2.
+        following the queue dynamics.
+
+        Attributes:
+            new_mid : the mid price generate by our exogeneous price model.
+            dt : time step interval
+            lambda_a0, alpha : Poisson LO arrival parameters
+
         """
         if self.best_bid is None or self.best_ask is None:
             return
 
-        current_mid = self.mid
+        current_mid = self.mid # mid t-1
         if current_mid is not None and new_mid is not None:
             delta_mid = new_mid - current_mid
             if delta_mid:
@@ -220,7 +248,7 @@ class OrderBook:
         p_cancel = 1.0 - math.exp(-theta * dt)
 
         for side_name, side_dict in (("bid", self.bids), ("ask", self.asks)):
-            for price, level in list(side_dict.items()):
+            for price, level in list(side_dict.items()):    # !!! PAS DE NEW PRICE LEVEL !!!
                 # Limit order arrivals λ_a(δ) = λ_a0 * exp(-α δ), δ in pips,
                 # simulated with a Poisson generator as in PoissonSimulation.
                 delta_pips = abs(price - new_mid) * 10_000.0

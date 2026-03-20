@@ -1,7 +1,7 @@
 import polars as pl
 from polars import col as c
 
-from OrderBook import OrderBook, Level
+from OrderBook import OrderBook, PriceLevel
 from MarketMaker import MarketMaker
 
 class MarketSimulator:
@@ -37,10 +37,10 @@ class MarketSimulator:
     def get_A_spread(self) -> float:
         return self.order_book_A.get_spread()
 
-    def get_A_best_bid(self) -> Level:
+    def get_A_best_bid(self) -> PriceLevel:
         return self.order_book_A.get_best_bid()
 
-    def get_A_best_ask(self) -> Level:
+    def get_A_best_ask(self) -> PriceLevel:
         return self.order_book_A.get_best_ask()
 
     def get_B_midpoint(self) -> float:
@@ -49,10 +49,10 @@ class MarketSimulator:
     def get_B_spread(self) -> float:
         return self.order_book_B.get_spread()
 
-    def get_B_best_bid(self) -> Level:
+    def get_B_best_bid(self) -> PriceLevel:
         return self.order_book_B.get_best_bid()
 
-    def get_B_best_ask(self) -> Level:
+    def get_B_best_ask(self) -> PriceLevel:
         return self.order_book_B.get_best_ask()
 
     def get_C_midpoint(self) -> float:
@@ -61,10 +61,10 @@ class MarketSimulator:
     def get_C_spread(self) -> float:
         return self.order_book_C.get_spread()
 
-    def get_C_best_bid(self) -> Level:
+    def get_C_best_bid(self) -> PriceLevel:
         return self.order_book_C.get_best_bid()
 
-    def get_C_best_ask(self) -> Level:
+    def get_C_best_ask(self) -> PriceLevel:
         return self.order_book_C.get_best_ask()
 
     def save_data(self, fill_rate: dict[str, float], top_trades: list[dict]):

@@ -147,6 +147,13 @@ class MarketMaker:
         })
 
     def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook):
-        # Output the list of orders to submit or cancel given the 3 order books
-        # and the inventory
+        # Pass limit orders on A given the state of B 200ms ago and C 170ms ago
+        pass
+
+    def check_and_hedge(self, order_book_B: OrderBook, order_book_C: OrderBook):
+        # Check if inventory is too skewed
+
+
+        # If so, pass orders to hedge
+        
         pass

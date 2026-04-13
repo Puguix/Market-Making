@@ -11,9 +11,9 @@ class MarketSimulator:
     """
 
     def __init__(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook, market_maker: MarketMaker):
-        self.order_book_A = order_book_A
-        self.order_book_B = order_book_B
-        self.order_book_C = order_book_C
+        self.order_books_A = order_book_A
+        self.order_books_B = order_book_B
+        self.order_books_C = order_book_C
         self.market_maker = market_maker
         
         # Backtesting report data
@@ -99,8 +99,14 @@ class MarketSimulator:
         # the orders
         fill_rate, top_trades = self.simulate_order_book_evolution()
 
-        # Then let the market maker make the market
+        # HFT snipes orders on A given B and C 50ms ago
+        self.hft.snipe(self.order_book_A, self.order_book_B, self.order_book_C)
+
+        # Then let the market maker make the market on A given B and C 200ms and 170ms ago
         self.market_maker.make_market(self.order_book_A, self.order_book_B, self.order_book_C)
+
+        # He then hedges himself if his inventory is too skewed
+        self.market_maker.check_and_hedge(self.order_book_B, self.order_book_C)
 
         # Finally, update the backtesting report data and market maker metrics
         self.save_data(fill_rate, top_trades)

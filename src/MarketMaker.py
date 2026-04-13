@@ -2,7 +2,34 @@ import polars as pl
 from polars import col as c
 from OrderBook import OrderBook
 import math
+from abc import ABC, abstractmethod
 
+
+# %%%%%% Price Grid Methods %%%%%%
+
+class PriceGridStrategy(ABC):
+
+    @abstractmethod
+    def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
+        pass
+
+
+class NaivePriceGridStrategy(PriceGridStrategy):
+
+    def __init__(self, max_levels: int = 10, tick_size: float = 0.0001):
+        self.max_levels = max_levels
+        self.tick_size = tick_size
+
+    def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
+
+        ref = problem.reservation_price
+        bids = [ref - i * self.tick_size for i in range(1, self.max_levels + 1)]
+        asks = [ref + i * self.tick_size for i in range(1, self.max_levels + 1)]
+        return (bids, asks)
+    
+
+
+# %%%%%% Utility Problem %%%%%%
 
 class UtilityProblem:
 
@@ -15,6 +42,7 @@ class UtilityProblem:
                  kappa: float,
                  latency: float,
                  fees_pips: float = 2.0,
+                 price_grid_strategy: PriceGridStrategy = NaivePriceGridStrategy(),
                  ):
         
         self.gamma = gamma
@@ -55,7 +83,15 @@ class UtilityProblem:
     def best_bid(self) -> float:
         return self.reservation_price - self.optimal_spread / 2
 
+    # === Methods ===
+    def get_price_grid(self, max_levels: int=10, tick_size: float=0.0001) -> list[float]:
 
+        return self.price_grid_strategy.generate(
+            self
+        )
+
+
+# %%%%%% Market Maker Class %%%%%%
 
 class MarketMaker:
     """
@@ -148,6 +184,15 @@ class MarketMaker:
 
     def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook):
         # Pass limit orders on A given the state of B 200ms ago and C 170ms ago
+
+        reference_price = self._ref_price(order_book_B.mid, order_book_C.mid)
+        utility_problem = self._build_utility_problem(
+            mid_B=order_book_B.mid,
+            mid_C=order_book_C.mid,
+        )
+
+
+
         pass
 
     def check_and_hedge(self, order_book_B: OrderBook, order_book_C: OrderBook):

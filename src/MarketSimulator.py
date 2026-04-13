@@ -8,9 +8,54 @@ class MarketSimulator:
     """
     A market simulator for a single asset, with three different markets (A, B, and C),
     and a unique market maker on exchange A.
+    How to do it properly in Python:
     """
 
     def __init__(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook, market_maker: MarketMaker):
+        """
+
+        TODO PAUL
+
+        Instead of relying on the data structure to "rotate," you handle the index yourself:
+
+        Python
+
+        # Initialize a fixed-size list (21 slots for 200ms + current)
+        history = [None] * 21
+        current_idx = 0
+
+        # Every 10ms:
+        current_idx = (current_idx + 1) % 21
+        history[current_idx] = new_orderbook_data
+
+        # To get 50ms ago (5 steps):
+        past_50_idx = (current_idx - 5) % 21
+        data_50ms = history[past_50_idx]
+
+
+        class ExecutionWheel:
+    def __init__(self, max_delay_ms=200, step_ms=10):
+        self.size = (max_delay_ms // step_ms) + 1
+        # A list of lists: each index holds orders for that future tick
+        self.wheel = [[] for _ in range(self.size)]
+        self.current_idx = 0
+
+    def schedule_order(self, order, delay_ms):
+        steps = delay_ms // 10
+        target_idx = (self.current_idx + steps) % self.size
+        self.wheel[target_idx].append(order)
+
+    def get_orders_to_execute(self):
+        # Move the wheel forward
+        self.current_idx = (self.current_idx + 1) % self.size
+        orders = self.wheel[self.current_idx]
+        
+        # CRITICAL: Clear the slot after retrieving
+        self.wheel[self.current_idx] = [] 
+        return orders
+
+        """
+        
         self.order_books_A = order_book_A
         self.order_books_B = order_book_B
         self.order_books_C = order_book_C
@@ -99,14 +144,17 @@ class MarketSimulator:
         # the orders
         fill_rate, top_trades = self.simulate_order_book_evolution()
 
+        # Match pending orders
+        # TODO PAUL
+
         # HFT snipes orders on A given B and C 50ms ago
-        self.hft.snipe(self.order_book_A, self.order_book_B, self.order_book_C)
+        orders_to_pass_from_hft = self.hft.snipe(self.order_book_A, self.order_book_B, self.order_book_C)
 
         # Then let the market maker make the market on A given B and C 200ms and 170ms ago
         self.market_maker.make_market(self.order_book_A, self.order_book_B, self.order_book_C)
 
         # He then hedges himself if his inventory is too skewed
-        self.market_maker.check_and_hedge(self.order_book_B, self.order_book_C)
+        orders_to_pass_from_market_maker_hedging, exchange = self.market_maker.check_and_hedge(self.order_book_B, self.order_book_C)
 
         # Finally, update the backtesting report data and market maker metrics
         self.save_data(fill_rate, top_trades)

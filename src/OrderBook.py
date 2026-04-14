@@ -180,6 +180,19 @@ class OrderBook:
             if order.quantity > 0:
                 self._insert(order, self.asks)
         return fills
+    
+    def add_limit_order_list(self, orders: list[Order]) -> list[tuple[Order, float]]:
+        """
+        A method that enable to add a list of order in the order book.
+
+        Attributes:
+            orders (list[Oder]): The list of LO you want to add in the order book.
+
+        """
+        fills = []
+        for order in orders:
+            self.add_limit_order(order)
+        return fills
 
     def add_market_order(self, side: str, qty: float) -> list[tuple[Order, float]]:
         dummy = Order("__market__", side, float('inf') if side == 'bid' else 0.0, qty)

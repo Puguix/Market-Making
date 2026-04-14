@@ -1,6 +1,6 @@
 import polars as pl
 from polars import col as c
-from OrderBook import OrderBook
+from OrderBook import OrderBook, Order, PriceLevel
 import math
 from abc import ABC, abstractmethod
 
@@ -167,6 +167,9 @@ class MarketMaker:
         self.q_max = q_max
         self._t = 0.0
 
+        # order id compteur
+        self.id_cpt = 0
+
     # === protected methods ===
     
     def _ref_price(self, mid_B: float, mid_C: float) -> float:
@@ -215,7 +218,7 @@ class MarketMaker:
             "95th_percentile_PnL": ninety_fifth_percentile_PnL,
         })
 
-    def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook):
+    def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook)-> None:
         # Pass limit orders on A given the state of B 200ms ago and C 170ms ago
 
         reference_price = self._ref_price(order_book_B.mid, order_book_C.mid)
@@ -224,9 +227,36 @@ class MarketMaker:
             mid_C=order_book_C.mid,
         )
 
+        bids_prices, ask_prices = utility_problem.get_price_grid()
+        bids_qty, ask_qty = utility_problem.get_qty_grid()
 
+        # create list of orders to pass to the order book A
+        order_to_A = []
 
-        pass
+        #bids
+        for i, price in enumerate(bids_prices):
+            order_to_A.append(Order(
+                id = f"MM_{self.id_cpt}",
+                side = "bid",
+                price = price,
+                quantity = bids_qty[i]
+            ))
+            self.id_cpt += 1
+        
+        #asks
+        for i, price in enumerate(ask_prices):
+            order_to_A.append(Order(
+                id = f"MM_{self.id_cpt}",
+                side = "ask",
+                price = price,
+                quantity = ask_qty[i]
+            ))
+            self.id_cpt += 1
+
+        # add orders in list to A
+        order_book_A.add_limit_order_list(order_to_A)
+
+        
 
     def check_and_hedge(self, order_book_B: OrderBook, order_book_C: OrderBook):
         # Check if inventory is too skewed

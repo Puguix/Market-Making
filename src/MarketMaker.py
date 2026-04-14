@@ -28,6 +28,28 @@ class NaivePriceGridStrategy(PriceGridStrategy):
         return (bids, asks)
     
 
+# %%%%%% Qunatity Grid Methods %%%%%%
+
+class QuantityGridStrategy(ABC):
+
+    @abstractmethod
+    def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
+        pass
+
+
+class NaiveQuantityGridStrategy(QuantityGridStrategy):
+
+    def __init__(self, max_levels: int = 10):
+        self.max_levels = max_levels
+
+
+    def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
+
+        qty_per_level = int(problem.inventory_max / self.max_levels)
+        bids = [qty_per_level] * self.max_levels
+        asks = [qty_per_level] * self.max_levels
+        return (bids, asks)
+
 
 # %%%%%% Utility Problem %%%%%%
 
@@ -41,6 +63,8 @@ class UtilityProblem:
                  ref_price: float,
                  kappa: float,
                  latency: float,
+                 kapital: float = 1_000_000.0,
+                 delta_threshold: float = 0.05,
                  fees_pips: float = 2.0,
                  price_grid_strategy: PriceGridStrategy = NaivePriceGridStrategy(),
                  ):
@@ -53,6 +77,9 @@ class UtilityProblem:
         self.kappa = kappa
         self.latency = latency
         self.fees_pips = fees_pips
+        self.kapital = kapital
+        self.delta_threshold = delta_threshold
+        self.inventory_max = self.kapital * self.delta_threshold
 
     # === Properties ===
     @property
@@ -84,9 +111,15 @@ class UtilityProblem:
         return self.reservation_price - self.optimal_spread / 2
 
     # === Methods ===
-    def get_price_grid(self, max_levels: int=10, tick_size: float=0.0001) -> list[float]:
+    def get_price_grid(self) -> tuple[list[float], list[float]]:
 
         return self.price_grid_strategy.generate(
+            self
+        )
+    
+    def get_qty_grid(self) -> tuple[list[float], list[float]]:
+        
+        return self.quantity_grid_strategy.generate(
             self
         )
 

@@ -138,16 +138,16 @@ class MarketSimulator:
             self.order_books_C[self.current_idx_C].add_limit_order(order)
 
         # HFT snipes orders on A given B and C 50ms ago
-        order_A, order_B, order_C = self.hft.snipe(
+        orders_A, orders_B, orders_C = self.hft.snipe(
             self.order_book_A, 
-            self.order_books_B[(self.current_idx_B - 5) % 21], 
+            self.order_books_B[(self.current_idx_B - 5) % 21],
             self.order_books_C[(self.current_idx_C - 5) % 18]
         )
-        if order_A is not None:
+        for order_A in orders_A:
             self.order_book_A.add_limit_order(order_A)
-        if order_B is not None:
+        for order_B in orders_B:
             self.order_books_B[(self.current_idx_B + 5) % 21].add_limit_order(order_B)
-        if order_C is not None:
+        for order_C in orders_C:
             self.order_books_C[(self.current_idx_C + 5) % 18].add_limit_order(order_C)
 
         # Then let the market maker make the market on A given B and C 200ms and 170ms ago

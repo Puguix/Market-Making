@@ -213,28 +213,30 @@ class OrderBook:
 
     @property
     def best_bid(self):
-        return next(iter(self.bids), None)
+        best_price = next(iter(self.bids))
+        return best_price, self.bids[best_price].total_qty
 
     @property
     def best_ask(self):
-        return next(iter(self.asks), None)
+        best_price = next(iter(self.asks))
+        return best_price, self.asks[best_price].total_qty
 
     @property
     def spread(self):
         if self.best_bid and self.best_ask:
-            return self.best_ask - self.best_bid
+            return self.best_ask[0] - self.best_bid[0]
 
     @property
     def mid(self):
         if self.best_bid and self.best_ask:
-            return (self.best_bid + self.best_ask) / 2
+            return (self.best_bid[0] + self.best_ask[0]) / 2
 
     def evolve_one_step(
         self,
         new_mid: float,
         dt: float,
         mo_buy_prob: float = 0.5,
-    ) -> OrderBook:
+    ) -> "OrderBook":
         """
         Discrete-time evolution of the synthetic order book around a given mid-price,
         following the queue dynamics.

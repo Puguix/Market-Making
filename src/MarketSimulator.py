@@ -160,7 +160,8 @@ class MarketSimulator:
         # He then hedges himself if his inventory is too skewed
         order_B, order_C = self.market_maker.check_and_hedge(
             self.order_books_B[(self.current_idx_B - 20) % 21], 
-            self.order_books_C[(self.current_idx_C - 17) % 18]
+            self.order_books_C[(self.current_idx_C - 17) % 18],
+            self.price_simulator._t_seconds
         )
         if order_B is not None:
             self.pending_orders_B[(self.current_idx_B + 20) % 21].append(order_B)

@@ -2,8 +2,11 @@ import polars as pl
 from polars import col as c
 from OrderBook import OrderBook, Order, PriceLevel
 import math
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod 
+import time
 
+FEES_TAKER_B = 0.0002
+FEES_TAKER_C = 0.0003
 
 # %%%%%% Price Grid Methods %%%%%%
 
@@ -258,10 +261,87 @@ class MarketMaker:
 
         
 
-    def check_and_hedge(self, order_book_B: OrderBook, order_book_C: OrderBook):
-        # Check if inventory is too skewed
 
+    def check_and_hedge(self, order_book_B: OrderBook, order_book_C: OrderBook, current_time: float):
+        """
+        Check if inventory is too skewed and hedge if necessary.
+        Hedge threshold: 90% of q_max.
+        Picks the cheapest venue (net of taker fees), with partial fill split if needed.
+        Returns (order_B, order_C), either can be None if not needed.
+        """
+        abs_inventory = abs(self.EUR_quantity)
 
-        # If so, pass orders to hedge
-        
-        pass
+        if abs_inventory < 0.9 * self.q_max:
+            return None, None
+
+        # Bring inventory back to 50% of q_max
+        hedge_qty = abs_inventory - 0.5 * self.q_max
+        hedge_side = "ask" if self.EUR_quantity > 0 else "bid"
+
+        # Best prices and available quantities on each venue
+        if hedge_side == "ask":
+            # We're selling EUR : we hit the bid
+            price_B, qty_B = order_book_B.best_bid
+            price_C, qty_C = order_book_C.best_bid
+            net_B = price_B * (1 - FEES_TAKER_B)
+            net_C = price_C * (1 - FEES_TAKER_C)
+            prefer_B = net_B >= net_C
+        else:
+            # We're buying EUR : we lift the ask
+            price_B, qty_B = order_book_B.best_ask
+            price_C, qty_C = order_book_C.best_ask
+            net_B = price_B * (1 + FEES_TAKER_B)
+            net_C = price_C * (1 + FEES_TAKER_C)
+            prefer_B = net_B <= net_C
+
+        # Allocate quantities: preferred venue first, other venue for remainder
+        if prefer_B:
+            qty_primary = min(hedge_qty, qty_B)
+            qty_secondary = min(hedge_qty - qty_primary, qty_C)
+            price_primary, price_secondary = price_B, price_C
+            primary = "B"
+        else:
+            qty_primary = min(hedge_qty, qty_C)
+            qty_secondary = min(hedge_qty - qty_primary, qty_B)
+            price_primary, price_secondary = price_C, price_B
+            primary = "C"
+
+        order_B = None
+        order_C = None
+
+        if primary == "B":
+            if qty_primary > 0:
+                order_B = Order(
+                    order_id=f"hedge_B_{time.time_ns()}",
+                    side=hedge_side,
+                    price=float('inf') if hedge_side == 'bid' else 0.0,
+                    quantity=qty_primary,
+                    timestamp=current_time + 0.200,
+                )
+            if qty_secondary > 0:
+                order_C = Order(
+                    order_id=f"hedge_C_{time.time_ns()}",
+                    side=hedge_side,
+                    price=float('inf') if hedge_side == 'bid' else 0.0,
+                    quantity=qty_secondary,
+                    timestamp=current_time + 0.170,
+                )
+        else:
+            if qty_primary > 0:
+                order_C = Order(
+                    order_id=f"hedge_C_{time.time_ns()}",
+                    side=hedge_side,
+                    price=float('inf') if hedge_side == 'bid' else 0.0,
+                    quantity=qty_primary,
+                    timestamp=current_time + 0.170,
+                )
+            if qty_secondary > 0:
+                order_B = Order(
+                    order_id=f"hedge_B_{time.time_ns()}",
+                    side=hedge_side,
+                    price=float('inf') if hedge_side == 'bid' else 0.0,
+                    quantity=qty_secondary,
+                    timestamp=current_time + 0.200,
+                )
+
+        return order_B, order_C

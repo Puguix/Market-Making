@@ -7,7 +7,17 @@ from dataclasses import dataclass, field
 
 from PoissonSimulation import ArrivalIntensity, PoissonGenerator
 
+LAMBDA_A0_B = 5.0
+ALPHA_B = 0.05
+THETA_B = 0.1
+LAMBDA_MO_B = 2.0
+V_UNIT_B = 100_000
 
+LAMBDA_A0_C = 5.0
+ALPHA_C = 0.05
+THETA_C = 0.1
+LAMBDA_MO_C = 2.0
+V_UNIT_C = 100_000
 
 # %%%%%%%%%%%%%%%% OBJECTS %%%%%%%%%%%%%%%%%%%
 
@@ -87,10 +97,15 @@ class OrderBook:
         bids (SortedDict): The same
     """
 
-    def __init__(self):
+    def __init__(self, lambda_a0: float, alpha: float, theta: float, lambda_mo: float, v_unit: float):
         self.asks: SortedDict = SortedDict() # empty sorted dict
         self.bids: SortedDict = SortedDict(lambda p: -p) # invertly sorted dict (we want to see higher prices first for bids)
         self._orders: dict[str, Order] = {}  # id → order
+        self.lambda_a0 = lambda_a0
+        self.alpha = alpha
+        self.theta = theta
+        self.lambda_mo = lambda_mo
+        self.v_unit = v_unit
 
     # === protected methods ===
     def _insert(self, order: Order, side: SortedDict[float, PriceLevel])->None:
@@ -211,33 +226,30 @@ class OrderBook:
 
     @property
     def best_bid(self):
-        return next(iter(self.bids), None)
+        best_price = next(iter(self.bids))
+        return best_price, self.bids[best_price].total_qty
 
     @property
     def best_ask(self):
-        return next(iter(self.asks), None)
+        best_price = next(iter(self.asks))
+        return best_price, self.asks[best_price].total_qty
 
     @property
     def spread(self):
         if self.best_bid and self.best_ask:
-            return self.best_ask - self.best_bid
+            return self.best_ask[0] - self.best_bid[0]
 
     @property
     def mid(self):
         if self.best_bid and self.best_ask:
-            return (self.best_bid + self.best_ask) / 2
+            return (self.best_bid[0] + self.best_ask[0]) / 2
 
     def evolve_one_step(
         self,
         new_mid: float,
         dt: float,
-        lambda_a0: float,
-        alpha: float,
-        theta: float,
-        lambda_mo: float,
-        v_unit: float,
         mo_buy_prob: float = 0.5,
-    ):
+    ) -> "OrderBook":
         """
         Discrete-time evolution of the synthetic order book around a given mid-price,
         following the queue dynamics.
@@ -249,7 +261,7 @@ class OrderBook:
 
         """
         if self.best_bid is None or self.best_ask is None:
-            return
+            return self
 
         current_mid = self.mid # mid t-1
         if current_mid is not None and new_mid is not None:
@@ -267,8 +279,8 @@ class OrderBook:
                 delta_pips = abs(price - new_mid) * 10_000.0
                 arr_int = ArrivalIntensity(
                     spread=delta_pips,
-                    alpha=alpha,
-                    lambda_0=lambda_a0 * dt,  # expected arrivals over this dt at δ=0
+                    alpha=self.alpha,
+                    lambda_0=self.lambda_a0 * dt,  # expected arrivals over this dt at δ=0
                 )
                 n_arrivals = PoissonGenerator(arr_int).generate()
                 for _ in range(n_arrivals):
@@ -277,7 +289,7 @@ class OrderBook:
                         order_id=order_id,
                         side=side_name,
                         price=price,
-                        quantity=v_unit,
+                        quantity=self.v_unit,
                     )
                     self._insert(order, side_dict)
 
@@ -294,12 +306,14 @@ class OrderBook:
         mo_int = ArrivalIntensity(
             spread=0.0,
             alpha=0.0,
-            lambda_0=lambda_mo * dt,
+            lambda_0=self.lambda_mo * dt,
         )
         n_mo = PoissonGenerator(mo_int).generate()
         for _ in range(n_mo):
             side = "bid" if random.random() < mo_buy_prob else "ask"
-            self.add_market_order(side, v_unit)
+            self.add_market_order(side, self.v_unit)
+
+        return self
 
     def snapshot(self, depth: int = 5) -> dict:
         bids = [(p, self.bids[p].total_qty) for p in list(self.bids)[:depth]]
@@ -322,7 +336,7 @@ class OrderBook:
 
 # %%%%%%%%%%%%% Func %%%%%%%%%%%%%%
 def test_basic():
-    ob = OrderBook()
+    ob = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
 
     # Populate bids
     ob.add_limit_order(Order("B1", "bid", 1.08500, 1_000_000))
@@ -365,7 +379,7 @@ def test_basic():
 def test_advanced():
     random.seed(42)
 
-    ob = OrderBook()
+    ob = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
     base_mid = 1.08500
     tick = 0.0001  # 1 pip
 
@@ -386,11 +400,6 @@ def test_advanced():
 
     # Simulate several evolution steps with a slowly drifting mid-price
     dt = 0.01
-    lambda_a0 = 5.0
-    alpha = 0.05
-    theta = 0.1
-    lambda_mo = 2.0
-    v_unit = 100_000
 
     new_mid = base_mid
     for step in range(100):
@@ -399,11 +408,6 @@ def test_advanced():
         ob.evolve_one_step(
             new_mid=new_mid,
             dt=dt,
-            lambda_a0=lambda_a0,
-            alpha=alpha,
-            theta=theta,
-            lambda_mo=lambda_mo,
-            v_unit=v_unit,
             mo_buy_prob=0.5,
         )
         if (step + 1) % 25 == 0:

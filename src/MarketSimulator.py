@@ -1,66 +1,36 @@
 import polars as pl
 from polars import col as c
+import copy
 
 from OrderBook import OrderBook, PriceLevel
 from MarketMaker import MarketMaker
+from EURUSDPriceSimulator import EURUSDPriceSimulator
 
 class MarketSimulator:
     """
     A market simulator for a single asset, with three different markets (A, B, and C),
     and a unique market maker on exchange A.
-    How to do it properly in Python:
     """
 
-    def __init__(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook, market_maker: MarketMaker):
+    def __init__(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook, market_maker: MarketMaker, price_simulator: EURUSDPriceSimulator):
         """
-
-        TODO PAUL
-
-        Instead of relying on the data structure to "rotate," you handle the index yourself:
-
-        Python
-
-        # Initialize a fixed-size list (21 slots for 200ms + current)
-        history = [None] * 21
-        current_idx = 0
-
-        # Every 10ms:
-        current_idx = (current_idx + 1) % 21
-        history[current_idx] = new_orderbook_data
-
-        # To get 50ms ago (5 steps):
-        past_50_idx = (current_idx - 5) % 21
-        data_50ms = history[past_50_idx]
-
-
-        class ExecutionWheel:
-    def __init__(self, max_delay_ms=200, step_ms=10):
-        self.size = (max_delay_ms // step_ms) + 1
-        # A list of lists: each index holds orders for that future tick
-        self.wheel = [[] for _ in range(self.size)]
-        self.current_idx = 0
-
-    def schedule_order(self, order, delay_ms):
-        steps = delay_ms // 10
-        target_idx = (self.current_idx + steps) % self.size
-        self.wheel[target_idx].append(order)
-
-    def get_orders_to_execute(self):
-        # Move the wheel forward
-        self.current_idx = (self.current_idx + 1) % self.size
-        orders = self.wheel[self.current_idx]
-        
-        # CRITICAL: Clear the slot after retrieving
-        self.wheel[self.current_idx] = [] 
-        return orders
-
+        order_book_A: The order book for exchange A
+        order_book_B: The order book for exchange B
+        order_book_C: The order book for exchange C
+        market_maker: The market maker for exchange A
+        price_simulator: The price simulator for the base currency
         """
         
-        self.order_books_A = order_book_A
-        self.order_books_B = order_book_B
-        self.order_books_C = order_book_C
+        self.order_book_A = order_book_A
+        self.order_books_B = [order_book_B] + [None] * 20 # 200ms
+        self.order_books_C = [order_book_C] + [None] * 17 # 170ms
+        self.current_idx_B = 0
+        self.current_idx_C = 0
         self.market_maker = market_maker
-        
+        self.price_simulator = price_simulator
+        self.pending_orders_B = [[] for _ in range(21)]
+        self.pending_orders_C = [[] for _ in range(18)]
+
         # Backtesting report data
         self.data = pl.DataFrame(schema={
             "best_bid_A": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
@@ -138,23 +108,65 @@ class MarketSimulator:
                 "top_trades": top_trades,
             })
 
+    def simulate_order_book_evolution(self):
+        mid, mid_B, mid_C = self.price_simulator.next_prices()
+        new_B = copy.deepcopy(self.order_books_B[self.current_idx_B]).evolve_one_step(mid_B, 0.01)
+        new_C = copy.deepcopy(self.order_books_C[self.current_idx_C]).evolve_one_step(mid_C, 0.01)
+        self.order_books_B[(self.current_idx_B + 1) % 21] = new_B
+        self.order_books_C[(self.current_idx_C + 1) % 18] = new_C
+
+        # TODO return fill rate and top trades
+        return None, None 
+
+    def simulate_200ms_history(self):
+        # Simulate the evolution of the order books for 200ms so the main simulation can start with the history necessary for the main flow to work correctly
+        for _ in range(20): # 200ms
+            self.simulate_order_book_evolution()
+            self.current_idx_B = (self.current_idx_B + 1) % 21
+            self.current_idx_C = (self.current_idx_C + 1) % 18
+
     def simulate_single_step(self):
-        # Either simulate orders to be executed on A, B and C
-        # Or simulate the evolution of the midprice and then reconstruct 
-        # the orders
+        # Simulate the evolution of the midprice and then reconstruct the orders
         fill_rate, top_trades = self.simulate_order_book_evolution()
+        self.current_idx_B = (self.current_idx_B + 1) % 21
+        self.current_idx_C = (self.current_idx_C + 1) % 18
 
         # Match pending orders
-        # TODO PAUL
+        for order in self.pending_orders_B[self.current_idx_B]:
+            self.order_books_B[self.current_idx_B].add_limit_order(order)
+        for order in self.pending_orders_C[self.current_idx_C]:
+            self.order_books_C[self.current_idx_C].add_limit_order(order)
 
         # HFT snipes orders on A given B and C 50ms ago
-        orders_to_pass_from_hft = self.hft.snipe(self.order_book_A, self.order_book_B, self.order_book_C)
+        orders_A, orders_B, orders_C = self.hft.snipe(
+            self.order_book_A, 
+            self.order_books_B[(self.current_idx_B - 5) % 21],
+            self.order_books_C[(self.current_idx_C - 5) % 18]
+        )
+        for order_A in orders_A:
+            self.order_book_A.add_limit_order(order_A)
+        for order_B in orders_B:
+            self.order_books_B[(self.current_idx_B + 5) % 21].add_limit_order(order_B)
+        for order_C in orders_C:
+            self.order_books_C[(self.current_idx_C + 5) % 18].add_limit_order(order_C)
 
         # Then let the market maker make the market on A given B and C 200ms and 170ms ago
-        self.market_maker.make_market(self.order_book_A, self.order_book_B, self.order_book_C)
+        self.market_maker.make_market(
+            self.order_book_A, 
+            self.order_books_B[(self.current_idx_B - 20) % 21], 
+            self.order_books_C[(self.current_idx_C - 17) % 18]
+        )
 
         # He then hedges himself if his inventory is too skewed
-        orders_to_pass_from_market_maker_hedging, exchange = self.market_maker.check_and_hedge(self.order_book_B, self.order_book_C)
+        order_B, order_C = self.market_maker.check_and_hedge(
+            self.order_books_B[(self.current_idx_B - 20) % 21], 
+            self.order_books_C[(self.current_idx_C - 17) % 18],
+            self.price_simulator._t_seconds
+        )
+        if order_B is not None:
+            self.pending_orders_B[(self.current_idx_B + 20) % 21].append(order_B)
+        if order_C is not None:
+            self.pending_orders_C[(self.current_idx_C + 17) % 18].append(order_C)
 
         # Finally, update the backtesting report data and market maker metrics
         self.save_data(fill_rate, top_trades)
@@ -162,6 +174,8 @@ class MarketSimulator:
 
         pass
 
-    def simulate_multiple_steps(self, steps: int):
+    def simulate_multiple_steps(self, steps: int, generate_200ms_history: bool = True):
+        if generate_200ms_history:
+            self.simulate_200ms_history()
         for _ in range(steps):
             self.simulate_single_step()

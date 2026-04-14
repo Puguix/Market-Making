@@ -22,9 +22,10 @@ class NaivePriceGridStrategy(PriceGridStrategy):
 
     def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
 
-        ref = problem.reservation_price
-        bids = [ref - i * self.tick_size for i in range(1, self.max_levels + 1)]
-        asks = [ref + i * self.tick_size for i in range(1, self.max_levels + 1)]
+        ref_bid = problem.best_bid
+        ref_ask = problem.best_ask
+        bids = [ref_bid - i * self.tick_size for i in range(0, self.max_levels)]
+        asks = [ref_ask + i * self.tick_size for i in range(0, self.max_levels)]
         return (bids, asks)
     
 
@@ -221,7 +222,6 @@ class MarketMaker:
     def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook)-> None:
         # Pass limit orders on A given the state of B 200ms ago and C 170ms ago
 
-        reference_price = self._ref_price(order_book_B.mid, order_book_C.mid)
         utility_problem = self._build_utility_problem(
             mid_B=order_book_B.mid,
             mid_C=order_book_C.mid,

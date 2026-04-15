@@ -590,10 +590,10 @@ def test_making():
     mm = MarketMaker(
         EUR_quantity=0.0,
         USD_quantity=1_000_000.0,
-        gamma=0.1,
-        sigma=0.01,
-        kappa=1.5,
-        T=1.0,
+        gamma=0.005,
+        sigma=0.005,
+        kappa=50,
+        T=0.001,
         q_max=1_000_000.0,
     )
 
@@ -606,6 +606,8 @@ def test_making():
     print(f"Best bid/ask on C         : {order_book_C.best_bid} / {order_book_C.best_ask}")
     print(f"Orders on A before making: {before_orders}")
     print(f"Orders on A after making : {after_orders}")
+
+    order_book_A.print_book(depth=5)
 
 
 # %%%%%% Hedging Tests %%%%%%

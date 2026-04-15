@@ -51,8 +51,8 @@ class GeometricPriceGridStrategy(PriceGridStrategy):
 
     def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
 
-        ref_bid = problem.best_bid
-        ref_ask = problem.best_ask
+        ref_bid = round(problem.best_bid, 4)
+        ref_ask = round(problem.best_ask, 4)
         increment = 0 # starting at best bid / best ask
         bids, asks = [], []
         

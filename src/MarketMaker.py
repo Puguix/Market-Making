@@ -568,3 +568,97 @@ class MarketMaker:
                 )
 
         return order_B, order_C
+
+
+# %%%%%% Market Making Test %%%%%%
+def test_making():
+    print("=== test_making ===")
+    order_book_A = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=2.0, v_unit=100_000)
+    order_book_B = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=2.0, v_unit=100_000)
+    order_book_C = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=2.0, v_unit=100_000)
+
+    # Simple books like in HFT.py
+    order_book_B.add_limit_order(Order("B_BID_1", "bid", 1.1, 500_000))
+    order_book_B.add_limit_order(Order("B_ASK_1", "ask", 1.2, 500_000))
+    order_book_B.add_limit_order(Order("B_BID_2", "bid", 1.0, 1_000_000))
+    order_book_B.add_limit_order(Order("B_ASK_2", "ask", 1.3, 1_000_000))
+    order_book_C.add_limit_order(Order("C_BID_1", "bid", 1.1, 500_000))
+    order_book_C.add_limit_order(Order("C_ASK_1", "ask", 1.2, 500_000))
+    order_book_C.add_limit_order(Order("C_BID_2", "bid", 1.0, 1_000_000))
+    order_book_C.add_limit_order(Order("C_ASK_2", "ask", 1.3, 1_000_000))
+
+    mm = MarketMaker(
+        EUR_quantity=0.0,
+        USD_quantity=1_000_000.0,
+        gamma=0.1,
+        sigma=0.01,
+        kappa=1.5,
+        T=1.0,
+        q_max=1_000_000.0,
+    )
+
+    before_orders = len(order_book_A._orders)
+    mm.make_market(order_book_A, order_book_B, order_book_C)
+    after_orders = len(order_book_A._orders)
+
+    print(f"Best bid/ask on A         : {order_book_A.best_bid} / {order_book_A.best_ask}")
+    print(f"Best bid/ask on B         : {order_book_B.best_bid} / {order_book_B.best_ask}")
+    print(f"Best bid/ask on C         : {order_book_C.best_bid} / {order_book_C.best_ask}")
+    print(f"Orders on A before making: {before_orders}")
+    print(f"Orders on A after making : {after_orders}")
+
+
+# %%%%%% Hedging Tests %%%%%%
+def test_hedging():
+    print("\n=== test_hedging ===")
+    order_book_B = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=2.0, v_unit=100_000)
+    order_book_C = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=2.0, v_unit=100_000)
+
+    # Liquidity available on both venues
+    order_book_B.add_limit_order(Order("B_BID_1", "bid", 1.1, 300_000))
+    order_book_B.add_limit_order(Order("B_ASK_1", "ask", 1.2, 300_000))
+    order_book_C.add_limit_order(Order("C_BID_1", "bid", 1.05, 400_000))
+    order_book_C.add_limit_order(Order("C_ASK_1", "ask", 1.25, 400_000))
+
+    # Start with inventory > 90% of q_max to trigger hedging
+    mm = MarketMaker(
+        EUR_quantity=950_000.0,
+        USD_quantity=0.0,
+        gamma=0.1,
+        sigma=0.01,
+        kappa=1.5,
+        T=1.0,
+        q_max=1_000_000.0,
+    )
+
+    order_B, order_C = mm.check_and_hedge(order_book_B, order_book_C, current_time=0.0)
+    print(f"Hedge order to B: {order_B}")
+    print(f"Hedge order to C: {order_C}")
+
+    fills_B, fills_C = [], []
+    if order_B is not None:
+        fills_B = order_book_B.add_limit_order(order_B)
+    if order_C is not None:
+        fills_C = order_book_C.add_limit_order(order_C)
+
+    total_hedged = sum(q for _, q in fills_B) + sum(q for _, q in fills_C)
+    gross_cash_flow = sum(q * o.price for o, q in fills_B + fills_C)
+
+    if mm.EUR_quantity > 0:
+        mm.EUR_quantity -= total_hedged
+        mm.USD_quantity += gross_cash_flow
+    else:
+        mm.EUR_quantity += total_hedged
+        mm.USD_quantity -= gross_cash_flow
+
+    print(f"Total hedged qty          : {total_hedged}")
+    print(f"EUR inventory after hedge : {mm.EUR_quantity}")
+    print(f"USD cash after hedge      : {mm.USD_quantity}")
+
+
+# %%%%%% Main %%%%%%
+if __name__ == "__main__":
+    
+    test_making()
+    
+    test_hedging()

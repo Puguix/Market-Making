@@ -270,7 +270,7 @@ class OrderBook:
                 self._shift_prices(delta_mid)
 
         # Limit order arrivals and cancellations at each level
-        p_cancel = 1.0 - math.exp(-theta * dt)
+        p_cancel = 1.0 - math.exp(-self.theta * dt)
 
         for side_name, side_dict in (("bid", self.bids), ("ask", self.asks)):
             for price, level in list(side_dict.items()):    # !!! PAS DE NEW PRICE LEVEL !!!

@@ -2,11 +2,15 @@ import polars as pl
 from polars import col as c
 from OrderBook import OrderBook, Order, PriceLevel
 import math
-from abc import ABC, abstractmethod 
+from abc import ABC, abstractmethod
 import time
+import os
 
 FEES_TAKER_B = 0.0002
 FEES_TAKER_C = 0.0003
+FLUSH_INTERVAL = 10_000
+PARQUET_PATH_REALTIME = "metrics_realtime.parquet"
+PARQUET_PATH_AGGREGATED = "metrics_aggregated.parquet"
 
 # %%%%%% Price Grid Methods %%%%%%
 
@@ -40,6 +44,8 @@ class GeometricPriceGridStrategy(PriceGridStrategy):
                  max_levels: int = 10, 
                  tick_size: float = 0.0001
                  ):
+        self.delta_grid = delta_grid
+        self.geo_increment = geo_increment
         self.max_levels = max_levels
         self.tick_size = tick_size
 
@@ -93,7 +99,7 @@ class GeometricQuantityGridStrategy(QuantityGridStrategy):
         headroom = max(0, problem.inventory_max - abs(problem.inventory))
         normalization = (1 - self.alpha) / (1 - (self.alpha ** self.max_levels))
 
-        for k in range(0, int(self.max_levels/2)): # quote 5 levels each side
+        for k in range(0, int(self.max_levels)):
             qty = round(headroom * (self.alpha ** k) * normalization, 0) # round up to the closest integer
             bids.append(qty)
             asks.append(qty)
@@ -202,17 +208,6 @@ class MarketMaker:
                  T: float,
                  q_max:float,
                  ):
-        self.metrics = pl.DataFrame(schema={
-            "EUR/USD": pl.Float64,
-            "EUR_quantity": pl.Float64,
-            "USD_quantity": pl.Float64,
-            "PnL": pl.Float64,
-            "avg_PnL": pl.Float64,
-            "median_PnL": pl.Float64,
-            "5th_percentile_PnL": pl.Float64,
-            "95th_percentile_PnL": pl.Float64,
-        })
-
         self.EUR_quantity = EUR_quantity
         self.USD_quantity = USD_quantity
         self.gamma = gamma
@@ -221,9 +216,49 @@ class MarketMaker:
         self.T = T
         self.q_max = q_max
         self._t = 0.0
-
-        # order id compteur
+        self._step_count = 0
         self.id_cpt = 0
+
+        # Accumulators
+        self._realized_pnl = 0.0
+        self._hedge_cost = 0.0
+
+        # Realtime Buffer : every step
+        self.metrics_realtime = pl.DataFrame(schema={
+            "timestamp": pl.Float64,
+            "mid_A": pl.Float64,
+            "EUR_quantity": pl.Float64,
+            "USD_quantity": pl.Float64,
+            "inventory_pct": pl.Float64,
+            "hedge_regime": pl.String,
+            "mtm_pnl": pl.Float64,
+        })
+
+        # Aggregated Buffer : every 100 steps
+        self.metrics_aggregated = pl.DataFrame(schema={
+            "timestamp": pl.Float64,
+            "mid_A": pl.Float64,
+            "reservation_price": pl.Float64,
+            "optimal_spread": pl.Float64,
+            "spread_quoted": pl.Float64,
+            "best_bid_A": pl.Float64,
+            "best_ask_A": pl.Float64,
+            "EUR_quantity": pl.Float64,
+            "USD_quantity": pl.Float64,
+            "inventory_pct": pl.Float64,
+            "hedge_regime": pl.String,
+            "mtm_pnl": pl.Float64,
+            "realized_pnl": pl.Float64,
+            "hedge_cost": pl.Float64,
+            "fill_rate_bid": pl.Float64,
+            "fill_rate_ask": pl.Float64,
+            "spread_capture": pl.Float64,
+            "adverse_selection": pl.Float64,
+            "hft_snipe_count": pl.Int32,
+            "hft_snipe_qty": pl.Float64,
+            "arb_opportunity_count": pl.Int32,
+            "arb_opportunity_size": pl.Float64,
+        })
 
     # === protected methods ===
     
@@ -244,36 +279,171 @@ class MarketMaker:
             quantity_grid_strategy=GeometricQuantityGridStrategy(),
         )
     
-    # === calssic methods ===
+    # ===== Metrics Methods =====
+    def _flush_to_parquet(self):
+        """Flush les buffers en mémoire sur disque en mode append."""
+        for path, df in [
+            (PARQUET_PATH_REALTIME, self.metrics_realtime),
+            (PARQUET_PATH_AGGREGATED, self.metrics_aggregated),
+        ]:
+            if len(df) == 0:
+                continue
+            if os.path.exists(path):
+                existing = pl.read_parquet(path)
+                pl.concat([existing, df]).write_parquet(path)
+            else:
+                df.write_parquet(path)
+        self.metrics_realtime = self.metrics_realtime.clear()
+        self.metrics_aggregated = self.metrics_aggregated.clear()
+
+    def save_metrics(
+        self,
+        order_book_A: OrderBook,
+        order_book_B: OrderBook,
+        order_book_C: OrderBook,
+        timestamp: float,
+        fills: list,
+        hft_snipe_count: int,
+        hft_snipe_qty: float,
+        ):
+        """
+        Save metrics at each timestep.
+        fills: list of tuples (passive_order, qty) from add_limit_order on A.
+        """
+        self._step_count += 1
+        mid_A = order_book_A.mid
+        best_bid_A, _ = order_book_A.best_bid
+        best_ask_A, _ = order_book_A.best_ask
+
+        # Inventory regime
+        abs_inventory = abs(self.EUR_quantity)
+        inventory_pct = abs_inventory / self.q_max
+        if inventory_pct < 0.70:
+            hedge_regime = "Normal"
+        elif inventory_pct < 0.90:
+            hedge_regime = "Alert"
+        else:
+            hedge_regime = "Hedge"
+
+        # PnL MtM
+        mtm_pnl = self.EUR_quantity * mid_A + self.USD_quantity
+
+        # === Realtime row : every step ===
+        self.metrics_realtime = self.metrics_realtime.vstack(
+            pl.DataFrame([{
+                "timestamp": timestamp,
+                "mid_A": mid_A,
+                "EUR_quantity": self.EUR_quantity,
+                "USD_quantity": self.USD_quantity,
+                "inventory_pct": inventory_pct,
+                "hedge_regime": hedge_regime,
+                "mtm_pnl": mtm_pnl,
+            }], schema=self.metrics_realtime.schema)
+        )
+
+        # === Aggregated row : every 100 steps ===
+        if self._step_count % 100 == 0:
+
+            utility_problem = self._build_utility_problem(
+                mid_B=order_book_B.mid,  
+                mid_C=order_book_C.mid,
+            )
+
+            # Fills du MM
+            mm_fills = [(o, q) for (o, q) in fills if o.order_id.startswith("MM_")]
+            bid_fills = [(o, q) for (o, q) in mm_fills if o.side == 'bid']
+            ask_fills = [(o, q) for (o, q) in mm_fills if o.side == 'ask']
+
+            total_bid_qty = sum(q for _, q in bid_fills)
+            total_ask_qty = sum(q for _, q in ask_fills)
+            fill_rate_bid = total_bid_qty / self.q_max if bid_fills else 0.0
+            fill_rate_ask = total_ask_qty / self.q_max if ask_fills else 0.0
+
+            # Spread capture : distance between execution price and mid
+            spread_capture = (
+                sum(abs(o.price - mid_A) * q for o, q in mm_fills) / sum(q for _, q in mm_fills)
+                if mm_fills else 0.0
+            )
+
+            # Adverse selection : même calcul — sera affiné avec mid post-fill
+            adverse_selection = spread_capture
+
+            # Realized PnL accumulated
+            self._realized_pnl += sum(
+                q * o.price * (1 if o.side == 'ask' else -1)
+                for o, q in mm_fills
+            )
+
+            # Hedge cost accumulated
+            hedge_fills = [(o, q) for (o, q) in fills if o.order_id.startswith("hedge")]
+            self._hedge_cost += sum(
+                q * o.price * FEES_TAKER_B
+                for o, q in hedge_fills
+            )
+
+            # Arb opportunities : number of HFT orders as a proxy
+            arb_opportunity_count = hft_snipe_count
+            arb_opportunity_size = hft_snipe_qty
+
+            self.metrics_aggregated = self.metrics_aggregated.vstack(
+                pl.DataFrame([{
+                    "timestamp": timestamp,
+                    "mid_A": mid_A,
+                    "reservation_price": utility_problem.reservation_price,
+                    "optimal_spread": utility_problem.optimal_spread,
+                    "spread_quoted": best_ask_A - best_bid_A,
+                    "best_bid_A": best_bid_A,
+                    "best_ask_A": best_ask_A,
+                    "EUR_quantity": self.EUR_quantity,
+                    "USD_quantity": self.USD_quantity,
+                    "inventory_pct": inventory_pct,
+                    "hedge_regime": hedge_regime,
+                    "mtm_pnl": mtm_pnl,
+                    "realized_pnl": self._realized_pnl,
+                    "hedge_cost": self._hedge_cost,
+                    "fill_rate_bid": fill_rate_bid,
+                    "fill_rate_ask": fill_rate_ask,
+                    "spread_capture": spread_capture,
+                    "adverse_selection": adverse_selection,
+                    "hft_snipe_count": hft_snipe_count,
+                    "hft_snipe_qty": hft_snipe_qty,
+                    "arb_opportunity_count": arb_opportunity_count,
+                    "arb_opportunity_size": arb_opportunity_size,
+                }], schema=self.metrics_aggregated.schema)
+            )
+
+        # === Flush every FLUSH_INTERVAL steps ===
+        if self._step_count % FLUSH_INTERVAL == 0:
+            self._flush_to_parquet()
+
+    def compute_summary_stats(self) -> pl.DataFrame:
+        """
+        Flush final + stats agrégées sur tout le backtest.
+        À appeler une seule fois à la fin de la simulation.
+        """
+        self._flush_to_parquet()
+        df = pl.read_parquet(PARQUET_PATH_AGGREGATED)
+        return df.select([
+            pl.col("mtm_pnl").mean().alias("avg_mtm_pnl"),
+            pl.col("mtm_pnl").median().alias("median_mtm_pnl"),
+            pl.col("mtm_pnl").quantile(0.05).alias("pct5_mtm_pnl"),
+            pl.col("mtm_pnl").quantile(0.95).alias("pct95_mtm_pnl"),
+            pl.col("realized_pnl").last().alias("total_realized_pnl"),
+            pl.col("hedge_cost").last().alias("total_hedge_cost"),
+            pl.col("fill_rate_bid").mean().alias("avg_fill_rate_bid"),
+            pl.col("fill_rate_ask").mean().alias("avg_fill_rate_ask"),
+            pl.col("spread_capture").mean().alias("avg_spread_capture"),
+            pl.col("hft_snipe_count").sum().alias("total_hft_snipes"),
+            pl.col("hft_snipe_qty").sum().alias("total_hft_qty_sniped"),
+            pl.col("inventory_pct").mean().alias("avg_inventory_pct"),
+            pl.col("hedge_regime").value_counts().alias("regime_distribution"),
+        ])
+
     def get_EUR_quantity(self) -> float:
-        return self.metrics.tail(1)["EUR_quantity"].item()
+        return self.EUR_quantity
 
     def get_USD_quantity(self) -> float:
-        return self.metrics.tail(1)["USD_quantity"].item()
-
-    def compute_metrics(self, order_book: OrderBook) -> float:
-        # Inventory value in EURO
-        inventory_value = self.get_EUR_quantity() + self.get_USD_quantity() / order_book.get_midpoint()
-        # PnL
-        PnL = inventory_value - self.metrics.tail(1)["PnL"].item()
-        # Avg PnL
-        avg_PnL = self.metrics.tail(1)["avg_PnL"].item()
-        # Median PnL
-        median_PnL = self.metrics.tail(1)["median_PnL"].item()
-        # 5th percentile PnL
-        fifth_percentile_PnL = self.metrics.tail(1)["5th_percentile_PnL"].item()
-        # 95th percentile PnL
-        ninety_fifth_percentile_PnL = self.metrics.tail(1)["95th_percentile_PnL"].item()
-        # Save metrics
-        self.metrics = self.metrics.extend({
-            "EUR_quantity": self.get_EUR_quantity(),
-            "USD_quantity": self.get_USD_quantity(),
-            "PnL": PnL,
-            "avg_PnL": avg_PnL,
-            "median_PnL": median_PnL,
-            "5th_percentile_PnL": fifth_percentile_PnL,
-            "95th_percentile_PnL": ninety_fifth_percentile_PnL,
-        })
+        return self.USD_quantity
 
     def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook)-> None:
         # Pass limit orders on A given the state of B 200ms ago and C 170ms ago

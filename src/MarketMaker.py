@@ -32,6 +32,32 @@ class NaivePriceGridStrategy(PriceGridStrategy):
         return (bids, asks)
     
 
+class GeometricPriceGridStrategy(PriceGridStrategy):
+
+    def __init__(self, 
+                 delta_grid: float = 0.0001, 
+                 geo_increment:float = 1.4, 
+                 max_levels: int = 10, 
+                 tick_size: float = 0.0001
+                 ):
+        self.max_levels = max_levels
+        self.tick_size = tick_size
+
+    def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
+
+        ref_bid = problem.best_bid
+        ref_ask = problem.best_ask
+        increment = 0 # starting at best bid / best ask
+        bids, asks = [], []
+        
+        for i in range(0, self.max_levels):
+            bids.append(ref_bid - increment)
+            asks.append(ref_ask + increment)
+            increment += round(self.delta_grid * (self.geo_increment ** i), 4) # round up to the closest tick
+
+        return (bids, asks)
+    
+
 # %%%%%% Qunatity Grid Methods %%%%%%
 
 class QuantityGridStrategy(ABC):
@@ -46,7 +72,6 @@ class NaiveQuantityGridStrategy(QuantityGridStrategy):
     def __init__(self, max_levels: int = 10):
         self.max_levels = max_levels
 
-
     def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
 
         qty_per_level = int(problem.inventory_max / self.max_levels)
@@ -54,6 +79,27 @@ class NaiveQuantityGridStrategy(QuantityGridStrategy):
         asks = [qty_per_level] * self.max_levels
         return (bids, asks)
 
+
+class GeometricQuantityGridStrategy(QuantityGridStrategy):
+
+    def __init__(self, alpha: float = 0.7,max_levels: int = 10):
+        self.alpha = alpha
+        self.max_levels = max_levels
+
+    def generate(self, problem: "UtilityProblem") -> tuple[list[float], list[float]]:
+
+        bids, asks = [], []
+
+        headroom = max(0, problem.inventory_max - abs(problem.inventory))
+        normalization = (1 - self.alpha) / (1 - (self.alpha ** self.max_levels))
+
+        for k in range(0, int(self.max_levels/2)): # quote 5 levels each side
+            qty = round(headroom * (self.alpha ** k) * normalization, 0) # round up to the closest integer
+            bids.append(qty)
+            asks.append(qty)
+
+        return (bids, asks)
+    
 
 # %%%%%% Utility Problem %%%%%%
 
@@ -71,6 +117,7 @@ class UtilityProblem:
                  delta_threshold: float = 0.05,
                  fees_pips: float = 2.0,
                  price_grid_strategy: PriceGridStrategy = NaivePriceGridStrategy(),
+                 quantity_grid_strategy: QuantityGridStrategy = NaiveQuantityGridStrategy(),
                  ):
         
         self.gamma = gamma
@@ -84,6 +131,10 @@ class UtilityProblem:
         self.kapital = kapital
         self.delta_threshold = delta_threshold
         self.inventory_max = self.kapital * self.delta_threshold
+
+        # price and quantity grids
+        self.price_grid_strategy = price_grid_strategy
+        self.quantity_grid_strategy = quantity_grid_strategy
 
     # === Properties ===
     @property
@@ -189,6 +240,8 @@ class MarketMaker:
             ref_price=self._ref_price(mid_B, mid_C),
             kappa=self.kappa,
             latency=self.DELTA_TAU,
+            price_grid_strategy=GeometricPriceGridStrategy(),
+            quantity_grid_strategy=GeometricQuantityGridStrategy(),
         )
     
     # === calssic methods ===
@@ -239,7 +292,7 @@ class MarketMaker:
         #bids
         for i, price in enumerate(bids_prices):
             order_to_A.append(Order(
-                id = f"MM_{self.id_cpt}",
+                order_id = f"MM_{self.id_cpt}",
                 side = "bid",
                 price = price,
                 quantity = bids_qty[i]
@@ -249,7 +302,7 @@ class MarketMaker:
         #asks
         for i, price in enumerate(ask_prices):
             order_to_A.append(Order(
-                id = f"MM_{self.id_cpt}",
+                order_id = f"MM_{self.id_cpt}",
                 side = "ask",
                 price = price,
                 quantity = ask_qty[i]

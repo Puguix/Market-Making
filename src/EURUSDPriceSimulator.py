@@ -24,17 +24,18 @@ class EURUSDPriceSimulator:
         bar_sigma_pips: float = 5.0,
         lambda_jump_per_day: float = 4.0,
         sigma_jump_pips: float = 7.5,
-        noise_std_B_pips: float = 0.1,
-        noise_std_C_pips: float = 0.1,
-        seed: Optional[int] = None,
+        seed: Optional[int] = None
     ):
         self.s0 = s0
         self.dt_seconds = dt_seconds
         self.bar_sigma_pips = bar_sigma_pips
         self.lambda_jump_per_day = lambda_jump_per_day
         self.sigma_jump_pips = sigma_jump_pips
-        self.noise_std_B_pips = noise_std_B_pips
-        self.noise_std_C_pips = noise_std_C_pips
+
+        self._eps_B: float = 0.0  # current state AR(1) for B
+        self._eps_C: float = 0.0  # current state AR(1) for C
+        self._rho_eps: float = 0.9
+        self._sigma_eps_pips: float = 0.3  # 
 
         self._rng = np.random.default_rng(seed)
 
@@ -102,8 +103,22 @@ class EURUSDPriceSimulator:
         base_path = self._current_S + np.cumsum(delta_price)
 
         # Exchange-specific micro noise so B and C are not exactly equal
-        noise_B_pips = self.noise_std_B_pips * self._rng.standard_normal(n_steps)
-        noise_C_pips = self.noise_std_C_pips * self._rng.standard_normal(n_steps)
+        innovations_B = self._sigma_eps_pips * self._rng.standard_normal(n_steps)
+        innovations_C = self._sigma_eps_pips * self._rng.standard_normal(n_steps)
+
+        # Construire le chemin AR(1) vectorisé
+        noise_B_pips = np.zeros(n_steps)
+        noise_C_pips = np.zeros(n_steps)
+        eps_B, eps_C = self._eps_B, self._eps_C
+        for i in range(n_steps):
+            eps_B = self._rho_eps * eps_B + innovations_B[i]
+            eps_C = self._rho_eps * eps_C + innovations_C[i]
+            noise_B_pips[i] = eps_B
+            noise_C_pips[i] = eps_C
+
+        # Mettre à jour l'état pour le prochain appel
+        self._eps_B = eps_B
+        self._eps_C = eps_C
 
         s_B = base_path + noise_B_pips / 10_000.0
         s_C = base_path + noise_C_pips / 10_000.0
@@ -168,9 +183,11 @@ class EURUSDPriceSimulator:
         self._current_S += delta_price
         self._t_seconds += dt_s
 
-        # Exchange-specific micro noise so B and C are not exactly equal
-        noise_B_pips = self.noise_std_B_pips * self._rng.standard_normal()
-        noise_C_pips = self.noise_std_C_pips * self._rng.standard_normal()
+        # Exchange-specific micro noise so B and C are not exactly equal, AR(1)
+        self._eps_B = self._rho_eps * self._eps_B + self._sigma_eps_pips * self._rng.standard_normal()
+        self._eps_C = self._rho_eps * self._eps_C + self._sigma_eps_pips * self._rng.standard_normal()
+        noise_B_pips = self._eps_B
+        noise_C_pips = self._eps_C
 
         noise_B = noise_B_pips / 10_000.0
         noise_C = noise_C_pips / 10_000.0

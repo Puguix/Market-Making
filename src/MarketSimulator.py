@@ -208,6 +208,16 @@ class MarketSimulator:
         fills.extend(fills_A_organic)
         self.market_maker.update_inventory_from_fills(fills_A_organic)
 
+        # Accumulate all fills on A for top trades reporting
+        self.all_trades.extend(
+            {"price": o.price, "quantity": qty, "side": o.side, "exchange": "A"}
+            for o, qty in fills_A_organic
+        )
+        self.all_trades.extend(
+            {"price": o.price, "quantity": qty, "side": o.side, "exchange": "A"}
+            for o, qty in hft_fills_A
+        )
+
         # He then hedges himself if his inventory is too skewed
         order_B, order_C = self.market_maker.check_and_hedge(
             self.order_books_B[(self.current_idx_B - 20) % 21], 

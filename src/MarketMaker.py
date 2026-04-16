@@ -436,11 +436,18 @@ class MarketMaker:
 
     def compute_summary_stats(self) -> pl.DataFrame:
         """
-        Flush final + stats agrégées sur tout le backtest.
-        À appeler une seule fois à la fin de la simulation.
+        Flush final + aggregated stats on all the backtest.
+        Call one time at the end of the simulation.
         """
         self._flush_to_parquet()
+
+        if not os.path.exists(PARQUET_PATH_AGGREGATED):
+            return pl.DataFrame() 
+
         df = pl.read_parquet(PARQUET_PATH_AGGREGATED)
+        if len(df) == 0:
+            return pl.DataFrame()
+
         return df.select([
             pl.col("mtm_pnl").mean().alias("avg_mtm_pnl"),
             pl.col("mtm_pnl").median().alias("median_mtm_pnl"),

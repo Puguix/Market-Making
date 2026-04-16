@@ -159,7 +159,7 @@ class OrderBook:
             items = list(side_dict.items())
             new_side = SortedDict(key_func) if key_func else SortedDict()
             for price, level in items:
-                new_price = price + delta
+                new_price = float(price + delta)
                 for o in level.queue:
                     o.price = new_price
                 if new_price in new_side:
@@ -195,23 +195,13 @@ class OrderBook:
             if order.quantity > 0:
                 self._insert(order, self.asks)
         return fills
-    
-    def add_limit_order_list(self, orders: list[Order]) -> list[tuple[Order, float]]:
-        """
-        A method that enable to add a list of order in the order book.
-
-        Attributes:
-            orders (list[Oder]): The list of LO you want to add in the order book.
-
-        """
-        fills = []
-        for order in orders:
-            self.add_limit_order(order)
-        return fills
 
     def add_market_order(self, side: str, qty: float) -> list[tuple[Order, float]]:
         dummy = Order("__market__", side, float('inf') if side == 'bid' else 0.0, qty)
-        return self.add_limit_order(dummy) # place limit order with no limit (inf)
+        if side == 'bid':
+            return self._match(dummy, self.asks, lambda ask_p: ask_p <= dummy.price)
+        else:
+            return self._match(dummy, self.bids, lambda bid_p: bid_p >= dummy.price)
 
     def cancel(self, order_id: str) -> bool:
         order = self._orders.pop(order_id, None)
@@ -226,94 +216,93 @@ class OrderBook:
 
     @property
     def best_bid(self):
+        if not self.bids:
+            return None, 0.0
         best_price = next(iter(self.bids))
         return best_price, self.bids[best_price].total_qty
 
     @property
     def best_ask(self):
+        if not self.asks:
+            return None, 0.0
         best_price = next(iter(self.asks))
         return best_price, self.asks[best_price].total_qty
 
     @property
     def spread(self):
-        if self.best_bid and self.best_ask:
-            return self.best_ask[0] - self.best_bid[0]
+        bid, _ = self.best_bid
+        ask, _ = self.best_ask
+        if bid is None or ask is None:
+            return None
+        return ask - bid
 
     @property
     def mid(self):
-        if self.best_bid and self.best_ask:
-            return (self.best_bid[0] + self.best_ask[0]) / 2
+        bid, _ = self.best_bid
+        ask, _ = self.best_ask
+        if bid is None or ask is None:
+            return None
+        return (bid + ask) / 2
 
     def evolve_one_step(
         self,
         new_mid: float,
         dt: float,
         mo_buy_prob: float = 0.5,
-    ) -> "OrderBook":
-        """
-        Discrete-time evolution of the synthetic order book around a given mid-price,
-        following the queue dynamics.
+        n_levels: int = 20,
+        tick: float = 0.0001,
+    ) -> tuple["OrderBook", list]:
 
-        Attributes:
-            new_mid : the mid price generate by our exogeneous price model.
-            dt : time step interval
-            lambda_a0, alpha : Poisson LO arrival parameters
-
-        """
-        if self.best_bid is None or self.best_ask is None:
-            return self
-
-        current_mid = self.mid # mid t-1
+        # 1. Shift all existing prices to follow the new mid
+        current_mid = self.mid
         if current_mid is not None and new_mid is not None:
             delta_mid = new_mid - current_mid
             if delta_mid:
                 self._shift_prices(delta_mid)
 
-        # Limit order arrivals and cancellations at each level
+        # 2. Prune levels too far from new_mid to keep book size bounded
+        max_depth = n_levels * tick
+        for price in list(self.bids.keys()):
+            if new_mid - price > max_depth:
+                for o in self.bids[price].queue:
+                    self._orders.pop(o.order_id, None)
+                del self.bids[price]
+        for price in list(self.asks.keys()):
+            if price - new_mid > max_depth:
+                for o in self.asks[price].queue:
+                    self._orders.pop(o.order_id, None)
+                del self.asks[price]
+
+        # 3. Cancellations on existing levels
         p_cancel = 1.0 - math.exp(-self.theta * dt)
-
         for side_name, side_dict in (("bid", self.bids), ("ask", self.asks)):
-            for price, level in list(side_dict.items()):    # !!! PAS DE NEW PRICE LEVEL !!!
-                # Limit order arrivals λ_a(δ) = λ_a0 * exp(-α δ), δ in pips,
-                # simulated with a Poisson generator as in PoissonSimulation.
-                delta_pips = abs(price - new_mid) * 10_000.0
-                arr_int = ArrivalIntensity(
-                    spread=delta_pips,
-                    alpha=self.alpha,
-                    lambda_0=self.lambda_a0 * dt,  # expected arrivals over this dt at δ=0
-                )
-                n_arrivals = PoissonGenerator(arr_int).generate()
-                for _ in range(n_arrivals):
-                    order_id = f"sim_LO_{side_name}_{time.time_ns()}"
-                    order = Order(
-                        order_id=order_id,
-                        side=side_name,
-                        price=price,
-                        quantity=self.v_unit,
-                    )
-                    self._insert(order, side_dict)
-
-                # Cancellations: each resting order independently cancelled with p_cancel
-                to_cancel = []
-                for o in list(level.queue):
-                    if random.random() < p_cancel:
-                        to_cancel.append(o.order_id)
+            for price, level in list(side_dict.items()):
+                to_cancel = [o.order_id for o in list(level.queue) if random.random() < p_cancel]
                 for oid in to_cancel:
                     self.cancel(oid)
 
-        # Market order arrivals at best levels with intensity λ_MO,
-        # also simulated with the Poisson generator.
-        mo_int = ArrivalIntensity(
-            spread=0.0,
-            alpha=0.0,
-            lambda_0=self.lambda_mo * dt,
-        )
-        n_mo = PoissonGenerator(mo_int).generate()
+        # 4. LO arrivals on the fixed grid around new_mid
+        for k in range(1, n_levels + 1):
+            bid_price = round(new_mid - k * tick, 4)
+            ask_price = round(new_mid + k * tick, 4)
+            delta_pips = k
+
+            n_arr_bid = PoissonGenerator(ArrivalIntensity(spread=delta_pips, alpha=self.alpha, lambda_0=self.lambda_a0 * dt)).generate()
+            for _ in range(n_arr_bid):
+                self._insert(Order(f"sim_LO_bid_{time.time_ns()}", "bid", bid_price, self.v_unit), self.bids)
+
+            n_arr_ask = PoissonGenerator(ArrivalIntensity(spread=delta_pips, alpha=self.alpha, lambda_0=self.lambda_a0 * dt)).generate()
+            for _ in range(n_arr_ask):
+                self._insert(Order(f"sim_LO_ask_{time.time_ns()}", "ask", ask_price, self.v_unit), self.asks)
+
+        # 5. Market order arrivals
+        n_mo = PoissonGenerator(ArrivalIntensity(spread=0.0, alpha=0.0, lambda_0=self.lambda_mo * dt)).generate()
+        mo_fills = []
         for _ in range(n_mo):
             side = "bid" if random.random() < mo_buy_prob else "ask"
-            self.add_market_order(side, self.v_unit)
+            mo_fills.extend(self.add_market_order(side, self.v_unit))
 
-        return self
+        return self, mo_fills
 
     def snapshot(self, depth: int = 5) -> dict:
         bids = [(p, self.bids[p].total_qty) for p in list(self.bids)[:depth]]

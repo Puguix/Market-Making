@@ -28,6 +28,9 @@ class HFT:
         best_bid_C, qty_bid_C = order_book_C.best_bid
         best_ask_C, qty_ask_C = order_book_C.best_ask
 
+        if any(p is None for p in [best_bid_A, best_ask_A, best_bid_B, best_ask_B, best_bid_C, best_ask_C]):
+            return [], [], []
+
         if best_bid_A - FEES_TAKER_A > best_ask_B + FEES_TAKER_B:
             # A bid over B ask -> buy B sell A
             qty = min(qty_bid_A, qty_ask_B)

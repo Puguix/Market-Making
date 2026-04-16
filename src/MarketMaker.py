@@ -5,12 +5,14 @@ import math
 from abc import ABC, abstractmethod
 import time
 import os
+from typing import Optional
 
 FEES_TAKER_B = 0.0002
 FEES_TAKER_C = 0.0003
-FLUSH_INTERVAL = 10_000
-PARQUET_PATH_REALTIME = "metrics_realtime.parquet"
-PARQUET_PATH_AGGREGATED = "metrics_aggregated.parquet"
+FLUSH_INTERVAL = 1_000
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PARQUET_PATH_REALTIME = os.path.join(BASE_DIR, "metrics_realtime.parquet")
+PARQUET_PATH_AGGREGATED = os.path.join(BASE_DIR, "metrics_aggregated.parquet")
 
 # %%%%%% Price Grid Methods %%%%%%
 
@@ -128,7 +130,7 @@ class UtilityProblem:
         
         self.gamma = gamma
         self.sigma = sigma
-        self.T_minus_t = remaining_time
+        self.T_minus_t = self.T_minus_t = max(remaining_time, 0.001) # clamp
         self.inventory = inventory
         self.ref_price = ref_price
         self.kappa = kappa
@@ -207,7 +209,9 @@ class MarketMaker:
                  kappa: float,
                  T: float,
                  q_max:float,
+                 s0: float
                  ):
+        self.s0 = s0
         self.EUR_quantity = EUR_quantity
         self.USD_quantity = USD_quantity
         self.gamma = gamma
@@ -218,15 +222,23 @@ class MarketMaker:
         self._t = 0.0
         self._step_count = 0
         self.id_cpt = 0
+        self._initial_capital = EUR_quantity * s0 + USD_quantity
 
         # Accumulators
         self._realized_pnl = 0.0
         self._hedge_cost = 0.0
 
+        # Orders
+        self._active_orders: dict[str, list[tuple[str, float]]] = {}  # "bid_1.0850" -> [("MM_42", 300_000), ("MM_87", 150_000)]
+        self._last_posted_mid: Optional[float] = None
+        self._has_new_fills: bool = False
+        self.epsilon: float = 0.00005  # 0.5 pip
+
         # Realtime Buffer : every step
         self.metrics_realtime = pl.DataFrame(schema={
             "timestamp": pl.Float64,
             "mid_A": pl.Float64,
+            "mid_ref": pl.Float64,
             "EUR_quantity": pl.Float64,
             "USD_quantity": pl.Float64,
             "inventory_pct": pl.Float64,
@@ -238,6 +250,7 @@ class MarketMaker:
         self.metrics_aggregated = pl.DataFrame(schema={
             "timestamp": pl.Float64,
             "mid_A": pl.Float64,
+            "mid_ref": pl.Float64,
             "reservation_price": pl.Float64,
             "optimal_spread": pl.Float64,
             "spread_quoted": pl.Float64,
@@ -281,21 +294,36 @@ class MarketMaker:
 
     # ===== Update inventory =====
     def update_inventory_from_fills(self, fills: list) -> None:
-        """
-        Update EUR_quantity and USD_quantity from fills received on A.
-        - A fill on a bid MM order : EUR_quantity++, USD_quantity--
-        - A fill on a ask MM order : EUR_quantity--, USD_quantity++
-        """
         for order, qty in fills:
             if not order.order_id.startswith("MM_"):
                 continue
+
+            # Mise à jour inventaire
             if order.side == "bid":
                 self.EUR_quantity += qty
                 self.USD_quantity -= qty * order.price
-            else:  # ask
+            else:
                 self.EUR_quantity -= qty
                 self.USD_quantity += qty * order.price
-   
+
+            # Mise à jour tracking FIFO
+            side_prefix = "bid" if order.side == "bid" else "ask"
+            key = f"{side_prefix}_{round(order.price, 4)}"
+            if key in self._active_orders:
+                remaining = qty
+                while remaining > 0 and self._active_orders[key]:
+                    order_id, qty_active = self._active_orders[key][0]
+                    if qty_active <= remaining:
+                        remaining -= qty_active
+                        self._active_orders[key].pop(0)
+                    else:
+                        self._active_orders[key][0] = (order_id, qty_active - remaining)
+                        remaining = 0
+                if not self._active_orders[key]:
+                    self._active_orders.pop(key)
+
+            self._has_new_fills = True
+    
     
     # ===== Metrics Methods =====
     def _flush_to_parquet(self):
@@ -304,7 +332,7 @@ class MarketMaker:
             (PARQUET_PATH_REALTIME, self.metrics_realtime),
             (PARQUET_PATH_AGGREGATED, self.metrics_aggregated),
         ]:
-            if len(df) == 0:
+            if df.is_empty():
                 continue
             if os.path.exists(path):
                 existing = pl.read_parquet(path)
@@ -323,114 +351,100 @@ class MarketMaker:
         fills: list,
         hft_snipe_count: int,
         hft_snipe_qty: float,
-        ):
-        """
-        Save metrics at each timestep.
-        fills: list of tuples (passive_order, qty) from add_limit_order on A.
-        """
-        self._step_count += 1
-        mid_A = order_book_A.mid
-        best_bid_A, _ = order_book_A.best_bid
-        best_ask_A, _ = order_book_A.best_ask
+    ):
+        # 1. CALCUL DU PRIX DE RÉFÉRENCE (VWAP B/C) - La "Fair Value"
+        m_B = getattr(order_book_B, 'mid', None)
+        m_C = getattr(order_book_C, 'mid', None)
 
-        # Inventory regime
-        abs_inventory = abs(self.EUR_quantity)
-        inventory_pct = abs_inventory / self.q_max
-        if inventory_pct < 0.70:
-            hedge_regime = "Normal"
-        elif inventory_pct < 0.90:
-            hedge_regime = "Alert"
+        if m_B is not None and m_C is not None:
+            mid_ref = 0.75 * m_B + 0.25 * m_C
+        elif m_B is not None:
+            mid_ref = m_B
+        elif m_C is not None:
+            mid_ref = m_C
         else:
-            hedge_regime = "Hedge"
+            mid_ref = self.s0
+        
+        mid_ref = float(mid_ref)
 
-        # PnL MtM
-        mtm_pnl = self.EUR_quantity * mid_A + self.USD_quantity
+        # 2. RÉCUPÉRATION DU MID LOCAL DE A (Pour le display)
+        m_A = getattr(order_book_A, 'mid', None)
+        mid_A_display = float(m_A) if m_A is not None else mid_ref
 
-        # === Realtime row : every step ===
-        self.metrics_realtime = self.metrics_realtime.vstack(
-            pl.DataFrame([{
-                "timestamp": timestamp,
-                "mid_A": mid_A,
-                "EUR_quantity": self.EUR_quantity,
-                "USD_quantity": self.USD_quantity,
-                "inventory_pct": inventory_pct,
-                "hedge_regime": hedge_regime,
-                "mtm_pnl": mtm_pnl,
-            }], schema=self.metrics_realtime.schema)
-        )
+        # 3. CALCUL DU PNL MtM (Basé sur mid_ref pour éviter les sauts)
+        self._step_count += 1
+        mtm_pnl = float(self.EUR_quantity * mid_ref + self.USD_quantity - self._initial_capital)
 
-        # === Aggregated row : every 100 steps ===
+        # 4. RÉGIME D'INVENTAIRE
+        abs_inv = abs(self.EUR_quantity)
+        inv_pct = float(abs_inv / self.q_max) if self.q_max > 0 else 0.0
+        if inv_pct < 0.70:
+            regime = "Normal"
+        elif inv_pct < 0.90:
+            regime = "Alert"
+        else:
+            regime = "Hedge"
+
+        # 5. ENREGISTREMENT REALTIME (Chaque step)
+        row_rt = {
+            "timestamp": float(timestamp),
+            "mid_A": float(mid_A_display),
+            "mid_ref": float(mid_ref),
+            "EUR_quantity": float(self.EUR_quantity),
+            "USD_quantity": float(self.USD_quantity),
+            "inventory_pct": float(inv_pct),
+            "hedge_regime": str(regime),
+            "mtm_pnl": float(mtm_pnl),
+        }
+        self.metrics_realtime = self.metrics_realtime.vstack(pl.DataFrame([row_rt], schema=self.metrics_realtime.schema))
+
+        # 6. ENREGISTREMENT AGGREGATED (Tous les 100 steps)
         if self._step_count % 100 == 0:
+            # On recrée le problème d'utilité pour avoir reservation_price et optimal_spread
+            utility = self._build_utility_problem(mid_B=mid_ref, mid_C=mid_ref) # On simplifie ici
 
-            utility_problem = self._build_utility_problem(
-                mid_B=order_book_B.mid,  
-                mid_C=order_book_C.mid,
-            )
+            # --- SÉCURISATION DES DONNÉES DU CARNET A ---
+            s_quoted = getattr(order_book_A, 'spread', None)
+            s_quoted = float(s_quoted) if s_quoted is not None else 0.0
+            
+            b_price, _ = getattr(order_book_A, 'best_bid', (None, 0.0))
+            b_price = float(b_price) if b_price is not None else 0.0
+            
+            a_price, _ = getattr(order_book_A, 'best_ask', (None, 0.0))
+            a_price = float(a_price) if a_price is not None else 0.0
+            # --------------------------------------------
 
-            # Fills du MM
-            mm_fills = [(o, q) for (o, q) in fills if o.order_id.startswith("MM_")]
-            bid_fills = [(o, q) for (o, q) in mm_fills if o.side == 'bid']
-            ask_fills = [(o, q) for (o, q) in mm_fills if o.side == 'ask']
+            mm_fills = [f for f in fills if f[0].order_id.startswith("MM_")]
+            total_qty = sum(f[1] for f in mm_fills)
+            spread_cap = sum(abs(f[0].price - mid_ref) * f[1] for f in mm_fills) / total_qty if total_qty > 0 else 0.0
 
-            total_bid_qty = sum(q for _, q in bid_fills)
-            total_ask_qty = sum(q for _, q in ask_fills)
-            fill_rate_bid = total_bid_qty / self.q_max if bid_fills else 0.0
-            fill_rate_ask = total_ask_qty / self.q_max if ask_fills else 0.0
-
-            # Spread capture : distance between execution price and mid
-            spread_capture = (
-                sum(abs(o.price - mid_A) * q for o, q in mm_fills) / sum(q for _, q in mm_fills)
-                if mm_fills else 0.0
-            )
-
-            # Adverse selection : même calcul — sera affiné avec mid post-fill
-            adverse_selection = spread_capture
-
-            # Realized PnL accumulated
-            self._realized_pnl += sum(
-                q * o.price * (1 if o.side == 'ask' else -1)
-                for o, q in mm_fills
-            )
-
-            # Hedge cost accumulated
-            hedge_fills = [(o, q) for (o, q) in fills if o.order_id.startswith("hedge")]
-            self._hedge_cost += sum(
-                q * o.price * FEES_TAKER_B
-                for o, q in hedge_fills
-            )
-
-            # Arb opportunities : number of HFT orders as a proxy
-            arb_opportunity_count = hft_snipe_count
-            arb_opportunity_size = hft_snipe_qty
-
-            self.metrics_aggregated = self.metrics_aggregated.vstack(
-                pl.DataFrame([{
-                    "timestamp": timestamp,
-                    "mid_A": mid_A,
-                    "reservation_price": utility_problem.reservation_price,
-                    "optimal_spread": utility_problem.optimal_spread,
-                    "spread_quoted": best_ask_A - best_bid_A,
-                    "best_bid_A": best_bid_A,
-                    "best_ask_A": best_ask_A,
-                    "EUR_quantity": self.EUR_quantity,
-                    "USD_quantity": self.USD_quantity,
-                    "inventory_pct": inventory_pct,
-                    "hedge_regime": hedge_regime,
-                    "mtm_pnl": mtm_pnl,
-                    "realized_pnl": self._realized_pnl,
-                    "hedge_cost": self._hedge_cost,
-                    "fill_rate_bid": fill_rate_bid,
-                    "fill_rate_ask": fill_rate_ask,
-                    "spread_capture": spread_capture,
-                    "adverse_selection": adverse_selection,
-                    "hft_snipe_count": hft_snipe_count,
-                    "hft_snipe_qty": hft_snipe_qty,
-                    "arb_opportunity_count": arb_opportunity_count,
-                    "arb_opportunity_size": arb_opportunity_size,
-                }], schema=self.metrics_aggregated.schema)
-            )
-
-        # === Flush every FLUSH_INTERVAL steps ===
+            row_agg = {
+                "timestamp": float(timestamp),
+                "mid_A": float(mid_A_display),
+                "mid_ref": float(mid_ref),
+                "reservation_price": float(utility.reservation_price),
+                "optimal_spread": float(utility.optimal_spread),
+                "spread_quoted": s_quoted, # Utilise la version sécurisée
+                "best_bid_A": b_price,     # Utilise la version sécurisée
+                "best_ask_A": a_price,     # Utilise la version sécurisée
+                "EUR_quantity": float(self.EUR_quantity),
+                "USD_quantity": float(self.USD_quantity),
+                "inventory_pct": float(inv_pct),
+                "hedge_regime": str(regime),
+                "mtm_pnl": float(mtm_pnl),
+                "realized_pnl": float(self._realized_pnl),
+                "hedge_cost": float(self._hedge_cost),
+                "fill_rate_bid": float(sum(f[1] for f in mm_fills if f[0].side == 'bid') / self.q_max),
+                "fill_rate_ask": float(sum(f[1] for f in mm_fills if f[0].side == 'ask') / self.q_max),
+                "spread_capture": float(spread_cap),
+                "adverse_selection": float(spread_cap),
+                "hft_snipe_count": int(hft_snipe_count),
+                "hft_snipe_qty": float(hft_snipe_qty),
+                "arb_opportunity_count": int(hft_snipe_count),
+                "arb_opportunity_size": float(hft_snipe_qty),
+            }
+            self.metrics_aggregated = self.metrics_aggregated.vstack(pl.DataFrame([row_agg], schema=self.metrics_aggregated.schema))
+        # 7. FLUSH PERIODIQUE
         if self._step_count % FLUSH_INTERVAL == 0:
             self._flush_to_parquet()
 
@@ -470,44 +484,67 @@ class MarketMaker:
     def get_USD_quantity(self) -> float:
         return self.USD_quantity
 
-    def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook)-> None:
-        # Pass limit orders on A given the state of B 200ms ago and C 170ms ago
+    def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook) -> None:
 
         utility_problem = self._build_utility_problem(
             mid_B=order_book_B.mid,
             mid_C=order_book_C.mid,
         )
+        new_mid = utility_problem.ref_price
+
+        # === Vérifier si repost nécessaire ===
+        best_bid, _ = order_book_A.best_bid
+        best_ask, _ = order_book_A.best_ask
+        book_incomplete = best_ask is None or best_bid is None
+
+        if self._last_posted_mid is not None:
+            delta = abs(new_mid - self._last_posted_mid)
+            if delta < self.epsilon and not self._has_new_fills and not book_incomplete:
+                return
 
         bids_prices, ask_prices = utility_problem.get_price_grid()
         bids_qty, ask_qty = utility_problem.get_qty_grid()
 
-        # create list of orders to pass to the order book A
-        order_to_A = []
+        new_prices_bid = {f"bid_{round(p, 4)}": (p, bids_qty[i]) for i, p in enumerate(bids_prices)}
+        new_prices_ask = {f"ask_{round(p, 4)}": (p, ask_qty[i]) for i, p in enumerate(ask_prices)}
+        new_prices = {**new_prices_bid, **new_prices_ask}
 
-        #bids
-        for i, price in enumerate(bids_prices):
-            order_to_A.append(Order(
-                order_id = f"MM_{self.id_cpt}",
-                side = "bid",
-                price = price,
-                quantity = bids_qty[i]
-            ))
-            self.id_cpt += 1
-        
-        #asks
-        for i, price in enumerate(ask_prices):
-            order_to_A.append(Order(
-                order_id = f"MM_{self.id_cpt}",
-                side = "ask",
-                price = price,
-                quantity = ask_qty[i]
-            ))
-            self.id_cpt += 1
+        # === cancel levels that desapear ===
+        keys_to_cancel = [key for key in self._active_orders if key not in new_prices]
+        for key in keys_to_cancel:
+            for order_id, _ in self._active_orders.pop(key):
+                order_book_A.cancel(order_id)
 
-        # add orders in list to A
-        order_book_A.add_limit_order_list(order_to_A)
+        # === add or change level ===
+        keys_to_cancel = [key for key in self._active_orders if key not in new_prices]
+        for key in keys_to_cancel:
+            for order_id, _ in self._active_orders.pop(key):
+                order_book_A.cancel(order_id)
 
-        
+        # === cancel/repost systématique sur chaque niveau ===
+        for key, (price, qty_target) in new_prices.items():
+            side = "bid" if key.startswith("bid") else "ask"
+
+            # Cancel les ordres existants sur ce niveau
+            if key in self._active_orders:
+                for order_id, _ in self._active_orders[key]:
+                    order_book_A.cancel(order_id)
+                self._active_orders[key] = []
+
+            # Repost si qty > 0
+            if qty_target > 0:
+                order = Order(
+                    order_id=f"MM_{self.id_cpt}",
+                    side=side,
+                    price=price,
+                    quantity=qty_target,
+                )
+                self.id_cpt += 1
+                order_book_A.add_limit_order(order)
+                self._active_orders[key] = [(order.order_id, qty_target)]
+
+        self._last_posted_mid = new_mid
+        self._has_new_fills = False
 
 
     def check_and_hedge(self, order_book_B: OrderBook, order_book_C: OrderBook, current_time: float):
@@ -520,6 +557,14 @@ class MarketMaker:
         abs_inventory = abs(self.EUR_quantity)
 
         if abs_inventory < 0.9 * self.q_max:
+            return None, None
+
+        price_B_bid, qty_B_bid = order_book_B.best_bid
+        price_B_ask, qty_B_ask = order_book_B.best_ask
+        price_C_bid, qty_C_bid = order_book_C.best_bid
+        price_C_ask, qty_C_ask = order_book_C.best_ask
+
+        if any(p is None for p in [price_B_bid, price_B_ask, price_C_bid, price_C_ask]):
             return None, None
 
         # Bring inventory back to 50% of q_max
@@ -620,6 +665,7 @@ def test_making():
         kappa=50,
         T=0.001,
         q_max=1_000_000.0,
+        s0=1.15,  # initial mid price (used for initial NAV only)
     )
 
     before_orders = len(order_book_A._orders)
@@ -656,6 +702,7 @@ def test_hedging():
         kappa=1.5,
         T=1.0,
         q_max=1_000_000.0,
+        s0=1.15,  # initial mid price
     )
 
     order_B, order_C = mm.check_and_hedge(order_book_B, order_book_C, current_time=0.0)

@@ -31,6 +31,7 @@ class MarketSimulator:
         self.pending_orders_B = [[] for _ in range(21)]
         self.pending_orders_C = [[] for _ in range(18)]
         self.hft = hft
+        self.all_trades: list[dict] = []
 
         # Backtesting report data
         self.data = pl.DataFrame(schema={
@@ -123,13 +124,21 @@ class MarketSimulator:
 
     def simulate_order_book_evolution(self):
         mid, mid_B, mid_C = self.price_simulator.next_prices()
-        new_B = copy.deepcopy(self.order_books_B[self.current_idx_B]).evolve_one_step(mid_B, 0.01)
-        new_C = copy.deepcopy(self.order_books_C[self.current_idx_C]).evolve_one_step(mid_C, 0.01)
+
+        new_B, fills_B = copy.deepcopy(self.order_books_B[self.current_idx_B]).evolve_one_step(mid_B, 0.01)
+        new_C, fills_C = copy.deepcopy(self.order_books_C[self.current_idx_C]).evolve_one_step(mid_C, 0.01)
+
         self.order_books_B[(self.current_idx_B + 1) % 21] = new_B
         self.order_books_C[(self.current_idx_C + 1) % 18] = new_C
 
-        # TODO return fill rate and top trades
-        return None, None 
+        all_fills = [("B", o, qty) for o, qty in fills_B] + [("C", o, qty) for o, qty in fills_C]
+
+        # Top trades
+        self.all_trades.extend(
+            {"price": o.price, "quantity": qty, "side": o.side, "exchange": exch}
+            for exch, o, qty in all_fills
+        )
+
 
     def simulate_200ms_history(self):
         # Simulate the evolution of the order books for 200ms so the main simulation can start with the history necessary for the main flow to work correctly
@@ -141,7 +150,7 @@ class MarketSimulator:
     def simulate_single_step(self):
         fills = []
         # Simulate the evolution of the midprice and then reconstruct the orders
-        fill_rate, top_trades = self.simulate_order_book_evolution()
+        self.simulate_order_book_evolution()
         self.current_idx_B = (self.current_idx_B + 1) % 21
         self.current_idx_C = (self.current_idx_C + 1) % 18
 
@@ -150,9 +159,11 @@ class MarketSimulator:
         for order in self.pending_orders_B[self.current_idx_B]:
             order_fills = self.order_books_B[self.current_idx_B].add_limit_order(order)
             fills_hedge.extend(order_fills)
+        self.pending_orders_B[self.current_idx_B] = []  # empty after exec
         for order in self.pending_orders_C[self.current_idx_C]:
             order_fills = self.order_books_C[self.current_idx_C].add_limit_order(order)
             fills_hedge.extend(order_fills)
+        self.pending_orders_C[self.current_idx_C] = [] # empty after exec
 
         fills.extend(fills_hedge)
 
@@ -164,10 +175,13 @@ class MarketSimulator:
         )
 
         # HFT fills on A
+        hft_fills_A = []
         for order_A in orders_A:
             order_fills = self.order_book_A.add_limit_order(order_A)
-            fills.extend(order_fills)
-        
+            hft_fills_A.extend(order_fills)
+        fills.extend(hft_fills_A)
+        self.market_maker.update_inventory_from_fills(hft_fills_A)
+
         hft_snipe_count = len(orders_A)
         hft_snipe_qty = sum(o.quantity for o in orders_A)
 
@@ -184,6 +198,16 @@ class MarketSimulator:
             self.order_books_C[(self.current_idx_C - 17) % 18]
         )
 
+        # Organic MOs on A : spot already shifted with _shift_prices
+        # MOs generate fills on MM orders without moving the mid again.
+        _, fills_A_organic = self.order_book_A.evolve_one_step(
+            new_mid=self.order_book_A.mid,
+            dt=0.01,
+            mo_buy_prob=0.5,
+        )
+        fills.extend(fills_A_organic)
+        self.market_maker.update_inventory_from_fills(fills_A_organic)
+
         # He then hedges himself if his inventory is too skewed
         order_B, order_C = self.market_maker.check_and_hedge(
             self.order_books_B[(self.current_idx_B - 20) % 21], 
@@ -196,7 +220,10 @@ class MarketSimulator:
             self.pending_orders_C[(self.current_idx_C + 17) % 18].append(order_C)
 
         # Finally, update the backtesting report data and market maker metrics
-        self.save_data(fill_rate, top_trades)
+        self.save_data(
+            fill_rate={"bid": 0.0, "ask": 0.0},  # placeholder — fill rate MM calculé dans save_metrics
+            top_trades=self.get_top_trades(10),
+        )
         self.market_maker.save_metrics(
             order_book_A=self.order_book_A,
             order_book_B=self.order_books_B[(self.current_idx_B - 20) % 21],  # t-200ms
@@ -214,3 +241,6 @@ class MarketSimulator:
             self.simulate_200ms_history()
         for _ in range(steps):
             self.simulate_single_step()
+
+    def get_top_trades(self, n: int = 10) -> list[dict]:
+        return sorted(self.all_trades, key=lambda x: x["quantity"], reverse=True)[:n]

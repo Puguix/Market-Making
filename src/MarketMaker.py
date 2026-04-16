@@ -278,6 +278,24 @@ class MarketMaker:
             price_grid_strategy=GeometricPriceGridStrategy(),
             quantity_grid_strategy=GeometricQuantityGridStrategy(),
         )
+
+    # ===== Update inventory =====
+    def update_inventory_from_fills(self, fills: list) -> None:
+        """
+        Update EUR_quantity and USD_quantity from fills received on A.
+        - A fill on a bid MM order : EUR_quantity++, USD_quantity--
+        - A fill on a ask MM order : EUR_quantity--, USD_quantity++
+        """
+        for order, qty in fills:
+            if not order.order_id.startswith("MM_"):
+                continue
+            if order.side == "bid":
+                self.EUR_quantity += qty
+                self.USD_quantity -= qty * order.price
+            else:  # ask
+                self.EUR_quantity -= qty
+                self.USD_quantity += qty * order.price
+   
     
     # ===== Metrics Methods =====
     def _flush_to_parquet(self):

@@ -1,12 +1,12 @@
 import polars as pl
 from polars import col as c
 import copy
+from random import random
 
 from OrderBook import OrderBook, PriceLevel
 from MarketMaker import MarketMaker
 from EURUSDPriceSimulator import EURUSDPriceSimulator
 from HFT import HFT
-import random
 from PoissonSimulation import ArrivalIntensity, PoissonGenerator
 
 class MarketSimulator:
@@ -126,7 +126,6 @@ class MarketSimulator:
 
     def simulate_order_book_evolution(self):
         mid, mid_B, mid_C = self.price_simulator.next_prices()
-
         new_B, fills_B = copy.deepcopy(self.order_books_B[self.current_idx_B]).evolve_one_step(mid_B, 0.01)
         new_C, fills_C = copy.deepcopy(self.order_books_C[self.current_idx_C]).evolve_one_step(mid_C, 0.01)
 
@@ -143,8 +142,9 @@ class MarketSimulator:
 
 
     def simulate_200ms_history(self):
-        # Simulate the evolution of the order books for 200ms so the main simulation can start with the history necessary for the main flow to work correctly
-        for _ in range(20): # 200ms
+        # Warm up B/C ring buffers. B has 21 slots and writes to (idx+1)%21, so slot 0 is only
+        # updated after the 21st evolution; 21 steps (~210ms) ensure (current-20)%21 is never stale.
+        for _ in range(21):
             self.simulate_order_book_evolution()
             self.current_idx_B = (self.current_idx_B + 1) % 21
             self.current_idx_C = (self.current_idx_C + 1) % 18
@@ -218,7 +218,7 @@ class MarketSimulator:
 
         fills_A_organic = []
         for _ in range(n_mo):
-            side = "bid" if random.random() < 0.5 else "ask"
+            side = "bid" if random() < 0.5 else "ask"
             fills_A_organic.extend(self.order_book_A.add_market_order(side, self.order_book_A.v_unit))
         #print(f"[MOs] n_mo={n_mo}, fills={len(fills_A_organic)}")
 
@@ -273,17 +273,19 @@ class MarketSimulator:
             hft_snipe_qty=hft_snipe_qty,
         )
 
-        pass
-
     def simulate_multiple_steps(self, steps: int, generate_200ms_history: bool = True):
-        # Pré-peuple OrderBook A avant le démarrage
-        self.market_maker.make_market(
-            self.order_book_A,
-            self.order_books_B[0],
-            self.order_books_C[0],
-        )
+        # Generate 190ms of history for B and C
         if generate_200ms_history:
             self.simulate_200ms_history()
+
+        # Make the market on A given B and C 200ms and 170ms ago
+        self.market_maker.make_market(
+            self.order_book_A,
+            self.order_books_B[(self.current_idx_B - 20) % 21],
+            self.order_books_C[(self.current_idx_C - 17) % 18],
+        )
+
+        # Simulate the steps until the end
         for i in range(steps):
             self.simulate_single_step()
             if i % 500 == 0:
@@ -301,3 +303,14 @@ class MarketSimulator:
                 "side": str(t["side"])
             })
         return clean_trades
+
+
+if __name__ == "__main__":
+    OB_A = OrderBook(lambda_a0=50.0, alpha=0.05, theta=0.1, lambda_mo=20.0, v_unit=50000)
+    OB_B = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
+    OB_C = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
+    MM = MarketMaker(EUR_quantity=500_000, USD_quantity=500_000, gamma=0.05, sigma=0.0005, kappa=100, T=1000, q_max=900_000.0, s0=1.08500)
+    PS = EURUSDPriceSimulator(s0=1.15, dt_seconds=0.01)
+    HFT = HFT()
+    SIM = MarketSimulator(OB_A, OB_B, OB_C, MM, PS, HFT)
+    SIM.simulate_multiple_steps(steps=1000, generate_200ms_history=True)

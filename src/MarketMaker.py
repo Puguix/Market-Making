@@ -122,7 +122,7 @@ class UtilityProblem:
                  kappa: float,
                  latency: float,
                  kapital: float = 1_000_000.0,
-                 delta_threshold: float = 0.05,
+                 delta_threshold: float = 0.9,
                  fees_pips: float = 2.0,
                  price_grid_strategy: PriceGridStrategy = NaivePriceGridStrategy(),
                  quantity_grid_strategy: QuantityGridStrategy = NaiveQuantityGridStrategy(),
@@ -219,6 +219,7 @@ class MarketMaker:
         self.kappa = kappa
         self.T = T
         self.q_max = q_max
+        self.hedge_threshold = 0.90  # see check_and_hedge: skip hedge while max leg share stays below this
         self._t = 0.0
         self._step_count = 0
         self.id_cpt = 0
@@ -492,21 +493,16 @@ class MarketMaker:
         )
         new_mid = utility_problem.ref_price
 
-        # === Vérifier si repost nécessaire ===
-        best_bid, _ = order_book_A.best_bid
-        best_ask, _ = order_book_A.best_ask
-        book_incomplete = best_ask is None or best_bid is None
-
         if self._last_posted_mid is not None:
             delta = abs(new_mid - self._last_posted_mid)
-            if delta < self.epsilon and not self._has_new_fills and not book_incomplete:
+            if delta < self.epsilon and not self._has_new_fills:
                 return
 
         bids_prices, ask_prices = utility_problem.get_price_grid()
         bids_qty, ask_qty = utility_problem.get_qty_grid()
 
-        new_prices_bid = {f"bid_{round(p, 4)}": (p, bids_qty[i]) for i, p in enumerate(bids_prices)}
-        new_prices_ask = {f"ask_{round(p, 4)}": (p, ask_qty[i]) for i, p in enumerate(ask_prices)}
+        new_prices_bid = {f"bid_{p}": (p, bids_qty[i]) for i, p in enumerate(bids_prices)}
+        new_prices_ask = {f"ask_{p}": (p, ask_qty[i]) for i, p in enumerate(ask_prices)}
         new_prices = {**new_prices_bid, **new_prices_ask}
 
         # === cancel levels that desapear ===
@@ -515,11 +511,11 @@ class MarketMaker:
             for order_id, _ in self._active_orders.pop(key):
                 order_book_A.cancel(order_id)
 
-        # === add or change level ===
-        keys_to_cancel = [key for key in self._active_orders if key not in new_prices]
-        for key in keys_to_cancel:
-            for order_id, _ in self._active_orders.pop(key):
-                order_book_A.cancel(order_id)
+        # # === add or change level ===
+        # keys_to_cancel = [key for key in self._active_orders if key not in new_prices]
+        # for key in keys_to_cancel:
+        #     for order_id, _ in self._active_orders.pop(key):
+        #         order_book_A.cancel(order_id)
 
         # === cancel/repost systématique sur chaque niveau ===
         for key, (price, qty_target) in new_prices.items():
@@ -554,22 +550,21 @@ class MarketMaker:
         Picks the cheapest venue (net of taker fees), with partial fill split if needed.
         Returns (order_B, order_C), either can be None if not needed.
         """
-        abs_inventory = abs(self.EUR_quantity)
 
-        if abs_inventory < 0.9 * self.q_max:
-            return None, None
+        price_B_ask, _ = order_book_B.best_ask
 
-        price_B_bid, qty_B_bid = order_book_B.best_bid
-        price_B_ask, qty_B_ask = order_book_B.best_ask
-        price_C_bid, qty_C_bid = order_book_C.best_bid
-        price_C_ask, qty_C_ask = order_book_C.best_ask
+        # if any(p is None for p in [price_B_bid, price_B_ask, price_C_bid, price_C_ask]):
+        #     return None, None
 
-        if any(p is None for p in [price_B_bid, price_B_ask, price_C_bid, price_C_ask]):
+        eur_value = self.EUR_quantity * price_B_ask 
+        usd_value = self.USD_quantity
+
+        if max(eur_value, usd_value) < self.hedge_threshold * (eur_value + usd_value):
             return None, None
 
         # Bring inventory back to 50% of q_max
-        hedge_qty = abs_inventory - 0.5 * self.q_max
-        hedge_side = "ask" if self.EUR_quantity > 0 else "bid"
+        hedge_qty = usd_value - (eur_value + usd_value) / 2
+        hedge_side = "ask" if hedge_qty > 0 else "bid" # hedge qty > 0 means we need to sell USD
 
         # Best prices and available quantities on each venue
         if hedge_side == "ask":
@@ -591,12 +586,10 @@ class MarketMaker:
         if prefer_B:
             qty_primary = min(hedge_qty, qty_B)
             qty_secondary = min(hedge_qty - qty_primary, qty_C)
-            price_primary, price_secondary = price_B, price_C
             primary = "B"
         else:
             qty_primary = min(hedge_qty, qty_C)
             qty_secondary = min(hedge_qty - qty_primary, qty_B)
-            price_primary, price_secondary = price_C, price_B
             primary = "C"
 
         order_B = None

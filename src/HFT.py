@@ -31,22 +31,22 @@ class HFT:
         if any(p is None for p in [best_bid_A, best_ask_A, best_bid_B, best_ask_B, best_bid_C, best_ask_C]):
             return [], [], []
 
-        if best_bid_A - FEES_TAKER_A > best_ask_B + FEES_TAKER_B:
+        if best_bid_A * (1 - FEES_TAKER_A) > best_ask_B * (1 + FEES_TAKER_B):
             # A bid over B ask -> buy B sell A
             qty = min(qty_bid_A, qty_ask_B)
             orders_A.append(Order("__snipe__", "ask", best_bid_A, qty))
             orders_B.append(Order("__snipe__", "bid", best_ask_B, qty))
-        if best_ask_A + FEES_TAKER_A < best_bid_B - FEES_TAKER_B:
+        if best_ask_A * (1 + FEES_TAKER_A) < best_bid_B * (1 - FEES_TAKER_B):
             # A ask under B bid -> sell B buy A
             qty = min(qty_ask_A, qty_bid_B)
             orders_A.append(Order("__snipe__", "bid", best_ask_A, qty))
             orders_B.append(Order("__snipe__", "ask", best_bid_B, qty))
-        if best_bid_A - FEES_TAKER_A > best_ask_C + FEES_TAKER_C:
+        if best_bid_A * (1 - FEES_TAKER_A) > best_ask_C * (1 + FEES_TAKER_C):
             # A bid over C ask -> buy C sell A
             qty = min(qty_bid_A, qty_ask_C)
             orders_A.append(Order("__snipe__", "ask", best_bid_A, qty))
             orders_C.append(Order("__snipe__", "bid", best_ask_C, qty))
-        if best_ask_A + FEES_TAKER_A < best_bid_C - FEES_TAKER_C:
+        if best_ask_A * (1 + FEES_TAKER_A) < best_bid_C * (1 - FEES_TAKER_C):
             # A ask under C bid -> sell C buy A
             qty = min(qty_ask_A, qty_bid_C)
             orders_A.append(Order("__snipe__", "bid", best_ask_A, qty))

@@ -230,16 +230,16 @@ class OrderBook:
 
     @property
     def spread(self):
-        bid, _ = self.best_bid
-        ask, _ = self.best_ask
+        bid = self.best_bid[0]
+        ask = self.best_ask[0]
         if bid is None or ask is None:
             return None
         return ask - bid
 
     @property
     def mid(self):
-        bid, _ = self.best_bid
-        ask, _ = self.best_ask
+        bid = self.best_bid[0]
+        ask = self.best_ask[0]
         if bid is None or ask is None:
             return None
         return (bid + ask) / 2
@@ -301,6 +301,21 @@ class OrderBook:
         for _ in range(n_mo):
             side = "bid" if random.random() < mo_buy_prob else "ask"
             mo_fills.extend(self.add_market_order(side, self.v_unit))
+
+        # 6. Empty or one-sided book: Poisson LOs can leave a side empty; mid is then undefined.
+        #    Seed inner quotes around new_mid (same grid as step 4), respecting any existing top of book.
+        if new_mid is not None:
+            inner_bid = round(new_mid - tick, 4)
+            inner_ask = round(new_mid + tick, 4)
+            bid_px, _ = self.best_bid
+            ask_px, _ = self.best_ask
+            if bid_px is None:
+                tb = inner_bid if ask_px is None else round(min(inner_bid, ask_px - tick), 4)
+                self._insert(Order(f"sim_LO_bid_{time.time_ns()}", "bid", tb, self.v_unit), self.bids)
+                bid_px, _ = self.best_bid
+            if ask_px is None:
+                ta = inner_ask if bid_px is None else round(max(inner_ask, bid_px + tick), 4)
+                self._insert(Order(f"sim_LO_ask_{time.time_ns()}", "ask", ta, self.v_unit), self.asks)
 
         return self, mo_fills
 

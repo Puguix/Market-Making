@@ -15,7 +15,7 @@ from HFT import HFT
 # This implementation follows a heuristic-first market making approach under latency constraints.
 
 class BacktestRunner:
-    def __init__(self, steps=5000, dt=0.01):
+    def __init__(self, steps=5000, dt=0.00001):
         self.steps = steps
         self.dt = dt
         self.mid_start = 1.0850
@@ -54,8 +54,7 @@ class BacktestRunner:
             gamma=0.05,   
             sigma=0.0005,        
             kappa=100,         
-            T=self.steps * self.dt, 
-            q_max=900_000.0,     
+            T=self.steps * self.dt,  
             s0=self.mid_start
         )
 

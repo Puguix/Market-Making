@@ -319,8 +319,10 @@ class OrderBook:
 
     def print_book(self, depth: int = 5):
         snap = self.snapshot(depth)
+        mid_str = f"{snap['mid']:.5f}" if snap['mid'] is not None else "None"
+        spread_str = f"{snap['spread']:.5f}" if snap['spread'] is not None else "None"
         print(f"\n{'─'*40}")
-        print(f"mid={snap['mid']:.5f} | spread={snap['spread']:.5f}")
+        print(f"mid={mid_str} | spread={spread_str}")
         print(f"{'─'*40}")
         print(f"  {'PRICE':>12}  {'QTY':>14}  SIDE")
         print(f"{'─'*40}")

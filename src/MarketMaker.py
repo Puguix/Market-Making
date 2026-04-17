@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import time
 import os
 from typing import Optional
+import warnings
 
 from config import (
     FEES_TAKER_B, FEES_TAKER_C, FLUSH_INTERVAL, BASE_DIR,
@@ -57,9 +58,9 @@ class GeometricPriceGridStrategy(PriceGridStrategy):
         bids, asks = [], []
         
         for i in range(0, self.max_levels):
-            bids.append(ref_bid - increment)
-            asks.append(ref_ask + increment)
-            increment += round(self.delta_grid * (self.geo_increment ** i), 4) # round up to the closest tick
+            bids.append(round(ref_bid - increment,4)) # round up to the closest tick
+            asks.append(round(ref_ask + increment, 4)) # round up to the closest tick
+            increment += self.delta_grid * (self.geo_increment ** i)
 
         return (bids, asks)
     
@@ -119,8 +120,8 @@ class UtilityProblem:
                  ref_price: float,
                  kappa: float,
                  latency: float,
+                 inventory_max: float,
                  kapital: float = 1_000_000.0,
-                 delta_threshold: float = 0.9,
                  fees_pips: float = 2.0,
                  price_grid_strategy: PriceGridStrategy = NaivePriceGridStrategy(),
                  quantity_grid_strategy: QuantityGridStrategy = NaiveQuantityGridStrategy(),
@@ -135,8 +136,7 @@ class UtilityProblem:
         self.latency = latency
         self.fees_pips = fees_pips
         self.kapital = kapital
-        self.delta_threshold = delta_threshold
-        self.inventory_max = self.kapital * self.delta_threshold
+        self.inventory_max = inventory_max
 
         # price and quantity grids
         self.price_grid_strategy = price_grid_strategy
@@ -206,22 +206,22 @@ class MarketMaker:
                  sigma: float,
                  kappa: float,
                  T: float,
-                 q_max:float,
                  s0: float
                  ):
         self.s0 = s0
         self.EUR_quantity = EUR_quantity
         self.USD_quantity = USD_quantity
+        self.EUR_quantity_t0 = EUR_quantity
+        self.USD_quantity_t0 = USD_quantity
         self.gamma = gamma
         self.sigma = sigma
         self.kappa = kappa
         self.T = T
-        self.q_max = q_max
         self.hedge_threshold = 0.90  # see check_and_hedge: skip hedge while max leg share stays below this
         self._t = 0.0
         self._step_count = 0
         self.id_cpt = 0
-        self._initial_capital = EUR_quantity * s0 + USD_quantity
+        self._initial_capital = self.EUR_quantity_t0 * self.s0 + self.USD_quantity_t0
 
         # Accumulators
         self._realized_pnl = 0.0
@@ -275,18 +275,29 @@ class MarketMaker:
     # === protected methods ===
     
     def _ref_price(self, mid_B: float, mid_C: float) -> float:
+        if mid_B is None and mid_C is not None:
+            return mid_C
+        elif mid_B is not None and mid_C is None:
+            return mid_B
+        if mid_B is None and mid_C is None:
+            raise ValueError("Both mid_B and mid_C cannot be None for reference price calculation.")
         return self.WEIGHT_B * mid_B + self.WEIGHT_C * mid_C
     
     def _build_utility_problem(self, mid_B: float, mid_C: float) -> UtilityProblem:
+
+        # compute inventory max
+        _ref_price = self._ref_price(mid_B, mid_C)
+        _inventory_max = (self.EUR_quantity * _ref_price + self.USD_quantity) * self.hedge_threshold
 
         return UtilityProblem(
             gamma=self.gamma,
             sigma=self.sigma,
             remaining_time=self.T - self._t,
-            inventory=self.EUR_quantity,
-            ref_price=self._ref_price(mid_B, mid_C),
+            inventory=self.USD_quantity,
+            ref_price=_ref_price,
             kappa=self.kappa,
             latency=self.DELTA_TAU,
+            inventory_max=_inventory_max,
             price_grid_strategy=GeometricPriceGridStrategy(),
             quantity_grid_strategy=GeometricQuantityGridStrategy(),
         )
@@ -375,9 +386,12 @@ class MarketMaker:
         mtm_pnl = float(self.EUR_quantity * mid_ref + self.USD_quantity - self._initial_capital)
 
         # 4. RÉGIME D'INVENTAIRE
-        abs_inv = abs(self.EUR_quantity)
-        inv_pct = float(abs_inv / self.q_max) if self.q_max > 0 else 0.0
-        if inv_pct < 0.70:
+        v_tot_metrics = self.EUR_quantity * mid_ref + self.USD_quantity
+        target_eur_metrics = (0.5 * v_tot_metrics) / mid_ref
+        dev = abs(self.EUR_quantity - target_eur_metrics)
+        max_dev = (self.hedge_threshold - 0.5) * v_tot_metrics / mid_ref
+        inv_pct = float(dev / max_dev) if max_dev > 0 else 0.0
+        if inv_pct < 0.75:
             regime = "Normal"
         elif inv_pct < 0.90:
             regime = "Alert"
@@ -433,8 +447,8 @@ class MarketMaker:
                 "mtm_pnl": float(mtm_pnl),
                 "realized_pnl": float(self._realized_pnl),
                 "hedge_cost": float(self._hedge_cost),
-                "fill_rate_bid": float(sum(f[1] for f in mm_fills if f[0].side == 'bid') / self.q_max),
-                "fill_rate_ask": float(sum(f[1] for f in mm_fills if f[0].side == 'ask') / self.q_max),
+                "fill_rate_bid": float(sum(f[1] for f in mm_fills if f[0].side == 'bid') / utility.inventory_max),
+                "fill_rate_ask": float(sum(f[1] for f in mm_fills if f[0].side == 'ask') / utility.inventory_max),
                 "spread_capture": float(spread_cap),
                 "adverse_selection": float(spread_cap),
                 "hft_snipe_count": int(hft_snipe_count),
@@ -484,6 +498,11 @@ class MarketMaker:
         return self.USD_quantity
 
     def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook) -> None:
+
+        # Skip market making if reference prices are unavailable
+        if order_book_B.mid is None or order_book_C.mid is None:
+            warnings.warn("Reference price unavailable, skipping market making this step. No mid B and C.")
+            return
 
         utility_problem = self._build_utility_problem(
             mid_B=order_book_B.mid,
@@ -544,25 +563,36 @@ class MarketMaker:
     def check_and_hedge(self, order_book_B: OrderBook, order_book_C: OrderBook, current_time: float):
         """
         Check if inventory is too skewed and hedge if necessary.
-        Hedge threshold: 90% of q_max.
+        Hedge threshold: 90% of total capital value.
         Picks the cheapest venue (net of taker fees), with partial fill split if needed.
         Returns (order_B, order_C), either can be None if not needed.
         """
 
         price_B_ask, _ = order_book_B.best_ask
+        price_B_bid, _ = order_book_B.best_bid
+        price_C_ask, _ = order_book_C.best_ask
+        price_C_bid, _ = order_book_C.best_bid
 
-        # if any(p is None for p in [price_B_bid, price_B_ask, price_C_bid, price_C_ask]):
-        #     return None, None
-
-        eur_value = self.EUR_quantity * price_B_ask 
-        usd_value = self.USD_quantity
-
-        if max(eur_value, usd_value) < self.hedge_threshold * (eur_value + usd_value):
+        if price_B_ask is None or price_B_bid is None or price_C_ask is None or price_C_bid is None:
             return None, None
 
-        # Bring inventory back to 50% of q_max
-        hedge_qty = usd_value - (eur_value + usd_value) / 2
-        hedge_side = "ask" if hedge_qty > 0 else "bid" # hedge qty > 0 means we need to sell USD
+        mid_B = (price_B_ask + price_B_bid) / 2
+        eur_value = self.EUR_quantity * mid_B 
+        usd_value = self.USD_quantity
+        v_tot = eur_value + usd_value
+
+        if max(eur_value, usd_value) < self.hedge_threshold * v_tot:
+            return None, None
+
+        # Rebalance target: 50% of total capital in EUR
+        target_eur_qty = (0.5 * v_tot) / mid_B
+
+        if self.EUR_quantity > target_eur_qty:
+            hedge_side = "ask" # Too much EUR -> Sell EUR
+            hedge_qty_eur = self.EUR_quantity - target_eur_qty
+        else:
+            hedge_side = "bid" # Too much USD -> Buy EUR
+            hedge_qty_eur = target_eur_qty - self.EUR_quantity
 
         # Best prices and available quantities on each venue
         if hedge_side == "ask":
@@ -582,14 +612,15 @@ class MarketMaker:
 
         # Allocate quantities: preferred venue first, other venue for remainder
         if prefer_B:
-            qty_primary = min(hedge_qty, qty_B)
-            qty_secondary = min(hedge_qty - qty_primary, qty_C)
+            qty_primary = min(hedge_qty_eur, qty_B)
+            qty_secondary = min(hedge_qty_eur - qty_primary, qty_C)
             primary = "B"
         else:
-            qty_primary = min(hedge_qty, qty_C)
-            qty_secondary = min(hedge_qty - qty_primary, qty_B)
+            qty_primary = min(hedge_qty_eur, qty_C)
+            qty_secondary = min(hedge_qty_eur - qty_primary, qty_B)
             primary = "C"
 
+        import time
         order_B = None
         order_C = None
 
@@ -650,13 +681,12 @@ def test_making():
 
     # HERE TO CHECK MANUALLY FOR PARAMS    
     mm = MarketMaker(
-        EUR_quantity=0.0,
-        USD_quantity=1_000_000.0,
+        EUR_quantity=500_000.0,
+        USD_quantity=600_000.0,
         gamma=0.005,
         sigma=0.005,
         kappa=50,
-        T=0.001,
-        q_max=1_000_000.0,
+        T=1,
         s0=1.15,  # initial mid price (used for initial NAV only)
     )
 
@@ -693,7 +723,6 @@ def test_hedging():
         sigma=0.01,
         kappa=1.5,
         T=1.0,
-        q_max=1_000_000.0,
         s0=1.15,  # initial mid price
     )
 

@@ -8,6 +8,7 @@ from MarketMaker import MarketMaker
 from EURUSDPriceSimulator import EURUSDPriceSimulator
 from HFT import HFT
 from PoissonSimulation import ArrivalIntensity, PoissonGenerator
+from config import FEES_TAKER_B, FEES_TAKER_C
 
 class MarketSimulator:
     """
@@ -90,20 +91,27 @@ class MarketSimulator:
     def save_data(self, fill_rate: dict[str, float], top_trades: list[dict]):
         bid_A_tuple = self.get_A_best_bid()
         ask_A_tuple = self.get_A_best_ask()
+        bid_B_tuple = self.get_B_best_bid()
+        ask_B_tuple = self.get_B_best_ask()
+        bid_C_tuple = self.get_C_best_bid()
+        ask_C_tuple = self.get_C_best_ask()
         
-        if bid_A_tuple[0] is None or ask_A_tuple[0] is None:
+        # Skip if any exchange lacks liquidity
+        if (bid_A_tuple[0] is None or ask_A_tuple[0] is None or
+            bid_B_tuple[0] is None or ask_B_tuple[0] is None or
+            bid_C_tuple[0] is None or ask_C_tuple[0] is None):
             return
 
         if len(self.data) == 0:
             A_bid_diff = A_ask_diff = B_bid_diff = B_ask_diff = C_bid_diff = C_ask_diff = 0.0
             A_midpoint_diff = B_midpoint_diff = C_midpoint_diff = 0.0
         else:
-            A_bid_diff = float(self.get_A_best_bid()[0] - self.data["best_bid_A"][-1]["value"])
-            A_ask_diff = float(self.get_A_best_ask()[0] - self.data["best_ask_A"][-1]["value"])
-            B_bid_diff = float(self.get_B_best_bid()[0] - self.data["best_bid_B"][-1]["value"])
-            B_ask_diff = float(self.get_B_best_ask()[0] - self.data["best_ask_B"][-1]["value"])
-            C_bid_diff = float(self.get_C_best_bid()[0] - self.data["best_bid_C"][-1]["value"])
-            C_ask_diff = float(self.get_C_best_ask()[0] - self.data["best_ask_C"][-1]["value"])
+            A_bid_diff = float(bid_A_tuple[0] - self.data["best_bid_A"][-1]["value"])
+            A_ask_diff = float(ask_A_tuple[0] - self.data["best_ask_A"][-1]["value"])
+            B_bid_diff = float(bid_B_tuple[0] - self.data["best_bid_B"][-1]["value"])
+            B_ask_diff = float(ask_B_tuple[0] - self.data["best_ask_B"][-1]["value"])
+            C_bid_diff = float(bid_C_tuple[0] - self.data["best_bid_C"][-1]["value"])
+            C_ask_diff = float(ask_C_tuple[0] - self.data["best_ask_C"][-1]["value"])
             A_midpoint_diff = float(self.get_A_midpoint() - self.data["midpoint_A"][-1]["value"])
             B_midpoint_diff = float(self.get_B_midpoint() - self.data["midpoint_B"][-1]["value"])
             C_midpoint_diff = float(self.get_C_midpoint() - self.data["midpoint_C"][-1]["value"])
@@ -111,10 +119,10 @@ class MarketSimulator:
         new_row = {
             "best_bid_A": {"value": float(bid_A_tuple[0]), "diff": float(A_bid_diff)},
             "best_ask_A": {"value": float(ask_A_tuple[0]), "diff": float(A_ask_diff)},
-            "best_bid_B": {"value": float(self.get_B_best_bid()[0]), "diff": float(B_bid_diff)},
-            "best_ask_B": {"value": float(self.get_B_best_ask()[0]), "diff": float(B_ask_diff)},
-            "best_bid_C": {"value": float(self.get_C_best_bid()[0]), "diff": float(C_bid_diff)},
-            "best_ask_C": {"value": float(self.get_C_best_ask()[0]), "diff": float(C_ask_diff)},
+            "best_bid_B": {"value": float(bid_B_tuple[0]), "diff": float(B_bid_diff)},
+            "best_ask_B": {"value": float(ask_B_tuple[0]), "diff": float(B_ask_diff)},
+            "best_bid_C": {"value": float(bid_C_tuple[0]), "diff": float(C_bid_diff)},
+            "best_ask_C": {"value": float(ask_C_tuple[0]), "diff": float(C_ask_diff)},
             "midpoint_A": {"value": float(self.get_A_midpoint()), "diff": float(A_midpoint_diff)},
             "midpoint_B": {"value": float(self.get_B_midpoint()), "diff": float(B_midpoint_diff)},
             "midpoint_C": {"value": float(self.get_C_midpoint()), "diff": float(C_midpoint_diff)},
@@ -165,10 +173,10 @@ class MarketSimulator:
             filled_qty = sum(qty for _, qty in order_fills)
             if order.side == "ask":  # MM vend EUR pour se déhedger
                 self.market_maker.EUR_quantity -= filled_qty
-                self.market_maker.USD_quantity += sum(o.price * qty for o, qty in order_fills)
+                self.market_maker.USD_quantity += sum(o.price * qty * (1 - FEES_TAKER_B) for o, qty in order_fills)
             else:  # MM achète EUR
                 self.market_maker.EUR_quantity += filled_qty
-                self.market_maker.USD_quantity -= sum(o.price * qty for o, qty in order_fills)
+                self.market_maker.USD_quantity -= sum(o.price * qty * (1 + FEES_TAKER_B) for o, qty in order_fills)
         self.pending_orders_B[self.current_idx_B] = []
 
         for order in self.pending_orders_C[self.current_idx_C]:
@@ -177,10 +185,10 @@ class MarketSimulator:
             filled_qty = sum(qty for _, qty in order_fills)
             if order.side == "ask":
                 self.market_maker.EUR_quantity -= filled_qty
-                self.market_maker.USD_quantity += sum(o.price * qty for o, qty in order_fills)
+                self.market_maker.USD_quantity += sum(o.price * qty * (1 - FEES_TAKER_C) for o, qty in order_fills)
             else:
                 self.market_maker.EUR_quantity += filled_qty
-                self.market_maker.USD_quantity -= sum(o.price * qty for o, qty in order_fills)
+                self.market_maker.USD_quantity -= sum(o.price * qty * (1 + FEES_TAKER_C) for o, qty in order_fills)
         self.pending_orders_C[self.current_idx_C] = []
 
         fills.extend(fills_hedge)
@@ -309,7 +317,7 @@ if __name__ == "__main__":
     OB_A = OrderBook(lambda_a0=50.0, alpha=0.05, theta=0.1, lambda_mo=20.0, v_unit=50000)
     OB_B = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
     OB_C = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
-    MM = MarketMaker(EUR_quantity=500_000, USD_quantity=500_000, gamma=0.05, sigma=0.0005, kappa=100, T=1000, q_max=900_000.0, s0=1.08500)
+    MM = MarketMaker(EUR_quantity=500_000, USD_quantity=500_000, gamma=0.05, sigma=0.0005, kappa=100, T=1, s0=1.08500)
     PS = EURUSDPriceSimulator(s0=1.15, dt_seconds=0.01)
     HFT = HFT()
     SIM = MarketSimulator(OB_A, OB_B, OB_C, MM, PS, HFT)

@@ -2,6 +2,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import numpy as np
 
+from config import (
+    ARRIVAL_INTENSITY_DEFAULT_SPREAD, ARRIVAL_INTENSITY_DEFAULT_ALPHA,
+    ARRIVAL_INTENSITY_DEFAULT_LAMBDA_0
+)
 
 # %%%%%%%%%%%%%%%% RANDOM GENERATOR GLOBAL %%%%%%%%%%%%%%%%%
 class RandomGenerator(ABC):
@@ -30,9 +34,9 @@ class ArrivalIntensity:
         lambda_0 (float>0): multiplier parameter
     """
 
-    spread:float = field(default=0.01)
-    alpha:float = field(default=0.1)
-    lambda_0:float = field(default=0.5)
+    spread:float = field(default=ARRIVAL_INTENSITY_DEFAULT_SPREAD)
+    alpha:float = field(default=ARRIVAL_INTENSITY_DEFAULT_ALPHA)
+    lambda_0:float = field(default=ARRIVAL_INTENSITY_DEFAULT_LAMBDA_0)
 
     @property
     def intensity(self):

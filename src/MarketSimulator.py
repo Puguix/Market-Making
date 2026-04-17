@@ -1,14 +1,38 @@
+import heapq
 import polars as pl
-from polars import col as c
-import copy
 from random import random
+from time import time
 
-from OrderBook import OrderBook, PriceLevel
+from OrderBook import OrderBook
 from MarketMaker import MarketMaker
 from EURUSDPriceSimulator import EURUSDPriceSimulator
 from HFT import HFT
 from PoissonSimulation import ArrivalIntensity, PoissonGenerator
-from config import FEES_TAKER_B, FEES_TAKER_C
+from config import (
+    FEES_TAKER_B, FEES_TAKER_C, SIMULATOR_BUFFER_B_SIZE,
+    SIMULATOR_BUFFER_C_SIZE, SIMULATOR_STEP_DT, SIMULATOR_HFT_LOOKBACK_STEPS,
+    SIMULATOR_HEDGE_LOOKBACK_B, SIMULATOR_HEDGE_LOOKBACK_C,
+    SIMULATOR_TOP_TRADES_COUNT,
+    SIMULATOR_RANDOM_BUY_PROB, SIMULATOR_ORGANIC_LAMBDA_SCALE,
+    LAMBDA_A0_A, ALPHA_A, THETA_A, LAMBDA_MO_A, V_UNIT_A,
+    LAMBDA_A0_B, ALPHA_B, THETA_B, LAMBDA_MO_B, V_UNIT_B,
+    BACKTEST_MM_GAMMA, BACKTEST_MM_SIGMA, BACKTEST_MM_KAPPA,
+    PRICE_SIM_DEFAULT_DT_SECONDS
+)
+
+_REPORT_DATA_SCHEMA = {
+    "best_bid_A": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "best_ask_A": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "best_bid_B": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "best_ask_B": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "best_bid_C": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "best_ask_C": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "midpoint_A": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "midpoint_B": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "midpoint_C": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
+    "fill_rate": pl.Struct({"bid": pl.Float64, "ask": pl.Float64}),
+    "top_trades": pl.List(pl.Struct({"price": pl.Float64, "quantity": pl.Float64, "Is Ask": pl.Boolean})),
+}
 
 class MarketSimulator:
     """
@@ -26,31 +50,36 @@ class MarketSimulator:
         """
         
         self.order_book_A = order_book_A
-        self.order_books_B = [order_book_B] + [None] * 20 # 200ms
-        self.order_books_C = [order_book_C] + [None] * 17 # 170ms
+        self.order_books_B = [order_book_B] + [None] * (SIMULATOR_BUFFER_B_SIZE - 1) # 200ms
+        self.order_books_C = [order_book_C] + [None] * (SIMULATOR_BUFFER_C_SIZE - 1) # 170ms
         self.current_idx_B = 0
         self.current_idx_C = 0
         self.market_maker = market_maker
         self.price_simulator = price_simulator
-        self.pending_orders_B = [[] for _ in range(21)]
-        self.pending_orders_C = [[] for _ in range(18)]
         self.hft = hft
         self.all_trades: list[dict] = []
+        self._report_rows: list[dict] = []
+        self._report_schema = _REPORT_DATA_SCHEMA
+        self._top_trades_heap: list[tuple[float, int, dict]] = []
+        self._top_trade_seq = 0
 
-        # Backtesting report data
-        self.data = pl.DataFrame(schema={
-            "best_bid_A": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "best_ask_A": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "best_bid_B": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "best_ask_B": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "best_bid_C": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "best_ask_C": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "midpoint_A": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "midpoint_B": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "midpoint_C": pl.Struct({"value": pl.Float64, "diff": pl.Float64}),
-            "fill_rate": pl.Struct({"bid": pl.Float64, "ask": pl.Float64}),
-            "top_trades": pl.List(pl.Struct({"price": pl.Float64, "quantity": pl.Float64, "side": pl.String}))
-        })
+    @property
+    def data(self) -> pl.DataFrame:
+        if not self._report_rows:
+            return pl.DataFrame(schema=self._report_schema)
+        return pl.DataFrame(self._report_rows, schema=self._report_schema)
+
+    def _register_trade(self, trade: dict) -> None:
+        self.all_trades.append(trade)
+        q = trade["quantity"]
+        self._top_trade_seq += 1
+        item = (q, self._top_trade_seq, trade)
+        k = SIMULATOR_TOP_TRADES_COUNT
+        h = self._top_trades_heap
+        if len(h) < k:
+            heapq.heappush(h, item)
+        elif q > h[0][0]:
+            heapq.heapreplace(h, item)
 
     def get_A_midpoint(self) -> float:
         return self.order_book_A.mid
@@ -102,19 +131,20 @@ class MarketSimulator:
             bid_C_tuple[0] is None or ask_C_tuple[0] is None):
             return
 
-        if len(self.data) == 0:
+        if not self._report_rows:
             A_bid_diff = A_ask_diff = B_bid_diff = B_ask_diff = C_bid_diff = C_ask_diff = 0.0
             A_midpoint_diff = B_midpoint_diff = C_midpoint_diff = 0.0
         else:
-            A_bid_diff = float(bid_A_tuple[0] - self.data["best_bid_A"][-1]["value"])
-            A_ask_diff = float(ask_A_tuple[0] - self.data["best_ask_A"][-1]["value"])
-            B_bid_diff = float(bid_B_tuple[0] - self.data["best_bid_B"][-1]["value"])
-            B_ask_diff = float(ask_B_tuple[0] - self.data["best_ask_B"][-1]["value"])
-            C_bid_diff = float(bid_C_tuple[0] - self.data["best_bid_C"][-1]["value"])
-            C_ask_diff = float(ask_C_tuple[0] - self.data["best_ask_C"][-1]["value"])
-            A_midpoint_diff = float(self.get_A_midpoint() - self.data["midpoint_A"][-1]["value"])
-            B_midpoint_diff = float(self.get_B_midpoint() - self.data["midpoint_B"][-1]["value"])
-            C_midpoint_diff = float(self.get_C_midpoint() - self.data["midpoint_C"][-1]["value"])
+            prev = self._report_rows[-1]
+            A_bid_diff = float(bid_A_tuple[0] - prev["best_bid_A"]["value"])
+            A_ask_diff = float(ask_A_tuple[0] - prev["best_ask_A"]["value"])
+            B_bid_diff = float(bid_B_tuple[0] - prev["best_bid_B"]["value"])
+            B_ask_diff = float(ask_B_tuple[0] - prev["best_ask_B"]["value"])
+            C_bid_diff = float(bid_C_tuple[0] - prev["best_bid_C"]["value"])
+            C_ask_diff = float(ask_C_tuple[0] - prev["best_ask_C"]["value"])
+            A_midpoint_diff = float(self.get_A_midpoint() - prev["midpoint_A"]["value"])
+            B_midpoint_diff = float(self.get_B_midpoint() - prev["midpoint_B"]["value"])
+            C_midpoint_diff = float(self.get_C_midpoint() - prev["midpoint_C"]["value"])
 
         new_row = {
             "best_bid_A": {"value": float(bid_A_tuple[0]), "diff": float(A_bid_diff)},
@@ -130,74 +160,49 @@ class MarketSimulator:
             "top_trades": top_trades,
         }
 
-        self.data = self.data.vstack(pl.DataFrame([new_row], schema=self.data.schema))
+        self._report_rows.append(new_row)
 
     def simulate_order_book_evolution(self):
         mid, mid_B, mid_C = self.price_simulator.next_prices()
-        new_B, fills_B = copy.deepcopy(self.order_books_B[self.current_idx_B]).evolve_one_step(mid_B, 0.01)
-        new_C, fills_C = copy.deepcopy(self.order_books_C[self.current_idx_C]).evolve_one_step(mid_C, 0.01)
+        new_B = self.order_books_B[self.current_idx_B].copy()
+        fills_B = new_B.evolve_one_step(mid_B, SIMULATOR_STEP_DT)[1]
+        new_C = self.order_books_C[self.current_idx_C].copy()
+        fills_C = new_C.evolve_one_step(mid_C, SIMULATOR_STEP_DT)[1]
 
-        self.order_books_B[(self.current_idx_B + 1) % 21] = new_B
-        self.order_books_C[(self.current_idx_C + 1) % 18] = new_C
+        self.order_books_B[(self.current_idx_B + 1) % SIMULATOR_BUFFER_B_SIZE] = new_B
+        self.order_books_C[(self.current_idx_C + 1) % SIMULATOR_BUFFER_C_SIZE] = new_C
 
         all_fills = [("B", o, qty) for o, qty in fills_B] + [("C", o, qty) for o, qty in fills_C]
 
-        # Top trades
-        self.all_trades.extend(
-            {"price": o.price, "quantity": qty, "side": o.side, "exchange": exch}
-            for exch, o, qty in all_fills
-        )
-
+        for exch, o, qty in all_fills:
+            self._register_trade(
+                {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": exch}
+            )
 
     def simulate_200ms_history(self):
         # Warm up B/C ring buffers. B has 21 slots and writes to (idx+1)%21, so slot 0 is only
         # updated after the 21st evolution; 21 steps (~210ms) ensure (current-20)%21 is never stale.
-        for _ in range(21):
+        for _ in range(SIMULATOR_BUFFER_B_SIZE):
             self.simulate_order_book_evolution()
-            self.current_idx_B = (self.current_idx_B + 1) % 21
-            self.current_idx_C = (self.current_idx_C + 1) % 18
+            self.current_idx_B = (self.current_idx_B + 1) % SIMULATOR_BUFFER_B_SIZE
+            self.current_idx_C = (self.current_idx_C + 1) % SIMULATOR_BUFFER_C_SIZE
 
     def simulate_single_step(self):
         fills = []
+        # t0 = time()
         # Simulate the evolution of the midprice and then reconstruct the orders
         self.simulate_order_book_evolution()
-        self.current_idx_B = (self.current_idx_B + 1) % 21
-        self.current_idx_C = (self.current_idx_C + 1) % 18
+        self.current_idx_B = (self.current_idx_B + 1) % SIMULATOR_BUFFER_B_SIZE
+        self.current_idx_C = (self.current_idx_C + 1) % SIMULATOR_BUFFER_C_SIZE
+        # t1 = time()
+        # print(f"simulate_order_book_evolution took {t1 - t0} seconds")
 
-        # Match and collecting fills from pending orders (hedge)
-        fills_hedge = []
-        for order in self.pending_orders_B[self.current_idx_B]:
-            order_fills = self.order_books_B[self.current_idx_B].add_market_order(order.side, order.quantity)
-            fills_hedge.extend(order_fills)
-            # Mise à jour inventaire MM
-            filled_qty = sum(qty for _, qty in order_fills)
-            if order.side == "ask":  # MM vend EUR pour se déhedger
-                self.market_maker.EUR_quantity -= filled_qty
-                self.market_maker.USD_quantity += sum(o.price * qty * (1 - FEES_TAKER_B) for o, qty in order_fills)
-            else:  # MM achète EUR
-                self.market_maker.EUR_quantity += filled_qty
-                self.market_maker.USD_quantity -= sum(o.price * qty * (1 + FEES_TAKER_B) for o, qty in order_fills)
-        self.pending_orders_B[self.current_idx_B] = []
-
-        for order in self.pending_orders_C[self.current_idx_C]:
-            order_fills = self.order_books_C[self.current_idx_C].add_market_order(order.side, order.quantity)
-            fills_hedge.extend(order_fills)
-            filled_qty = sum(qty for _, qty in order_fills)
-            if order.side == "ask":
-                self.market_maker.EUR_quantity -= filled_qty
-                self.market_maker.USD_quantity += sum(o.price * qty * (1 - FEES_TAKER_C) for o, qty in order_fills)
-            else:
-                self.market_maker.EUR_quantity += filled_qty
-                self.market_maker.USD_quantity -= sum(o.price * qty * (1 + FEES_TAKER_C) for o, qty in order_fills)
-        self.pending_orders_C[self.current_idx_C] = []
-
-        fills.extend(fills_hedge)
-
+        # t0 = time()
         # HFT snipes orders on A given B and C 50ms ago
         orders_A, orders_B, orders_C = self.hft.snipe(
             self.order_book_A, 
-            self.order_books_B[(self.current_idx_B - 5) % 21],
-            self.order_books_C[(self.current_idx_C - 5) % 18]
+            self.order_books_B[(self.current_idx_B - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_B_SIZE],
+            self.order_books_C[(self.current_idx_C - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_C_SIZE]
         )
 
         # HFT fills on A
@@ -211,114 +216,132 @@ class MarketSimulator:
         hft_snipe_count = len(orders_A)
         hft_snipe_qty = sum(o.quantity for o in orders_A)
 
-        # HFT fills on B and C
+        # HFT orders on B and C execute immediately on current books (no delay)
         for order_B in orders_B:
-            self.order_books_B[(self.current_idx_B + 5) % 21].add_limit_order(order_B)
+            self.order_books_B[self.current_idx_B].add_limit_order(order_B)
         for order_C in orders_C:
-            self.order_books_C[(self.current_idx_C + 5) % 18].add_limit_order(order_C)
+            self.order_books_C[self.current_idx_C].add_limit_order(order_C)
+
+        # t2 = time()
+        # print(f"snipe took {t2 - t1} seconds")
 
         # Organic MOs on A : spot already shifted with _shift_prices
         # MOs generate fills on MM orders without moving the mid again.
+        # t0 = time()
         n_mo = PoissonGenerator(ArrivalIntensity(
             spread=0.0, alpha=0.0, 
-            lambda_0=self.order_book_A.lambda_mo * 0.01
+            lambda_0=self.order_book_A.lambda_mo * SIMULATOR_ORGANIC_LAMBDA_SCALE
         )).generate()
 
         fills_A_organic = []
         for _ in range(n_mo):
-            side = "bid" if random() < 0.5 else "ask"
-            fills_A_organic.extend(self.order_book_A.add_market_order(side, self.order_book_A.v_unit))
+            fills_A_organic.extend(self.order_book_A.add_market_order(random() > SIMULATOR_RANDOM_BUY_PROB, self.order_book_A.v_unit))
         #print(f"[MOs] n_mo={n_mo}, fills={len(fills_A_organic)}")
 
         fills.extend(fills_A_organic)
         self.market_maker.update_inventory_from_fills(fills_A_organic)
 
-        #print(f"[PRE-MAKE] bid_A={self.order_book_A.best_bid}, ask_A={self.order_book_A.best_ask}, fills={len(fills_A_organic)}, has_new_fills={self.market_maker._has_new_fills}, last_mid={self.market_maker._last_posted_mid}")
+        # t3 = time()
+        # print(f"organic MOs took {t3 - t0} seconds")
 
-        # Then let the market maker make the market on A given B and C 200ms and 170ms ago
-        self.market_maker.make_market(
-            self.order_book_A, 
-            self.order_books_B[(self.current_idx_B - 20) % 21], 
-            self.order_books_C[(self.current_idx_C - 17) % 18]
-        )
-        #print(f"[POST-MAKE] bid_A={self.order_book_A.best_bid}, ask_A={self.order_book_A.best_ask}, active_orders={len(self.market_maker._active_orders)}")
-
-
-        # Accumulate all fills on A for top trades reporting
-        self.all_trades.extend(
-            {"price": o.price, "quantity": qty, "side": o.side, "exchange": "A"}
-            for o, qty in fills_A_organic
-        )
-        self.all_trades.extend(
-            {"price": o.price, "quantity": qty, "side": o.side, "exchange": "A"}
-            for o, qty in hft_fills_A
-        )
-
-        # He then hedges himself if his inventory is too skewed
+        # t0 = time()
+        # MM hedges after all arrivals (LO/MO/HFT), before quoting
         order_B, order_C = self.market_maker.check_and_hedge(
-            self.order_books_B[(self.current_idx_B - 20) % 21], 
-            self.order_books_C[(self.current_idx_C - 17) % 18],
+            self.order_books_B[self.current_idx_B],
+            self.order_books_C[self.current_idx_C],
             self.price_simulator._t_seconds
         )
         if order_B is not None:
-            self.pending_orders_B[(self.current_idx_B + 20) % 21].append(order_B)
+            order_fills_B = self.order_books_B[self.current_idx_B].add_market_order(order_B.is_ask, order_B.quantity)
+            fills.extend(order_fills_B)
+            self.market_maker.apply_hedge_fills(order_fills_B, order_B.is_ask, FEES_TAKER_B)
         if order_C is not None:
-            self.pending_orders_C[(self.current_idx_C + 17) % 18].append(order_C)
+            order_fills_C = self.order_books_C[self.current_idx_C].add_market_order(order_C.is_ask, order_C.quantity)
+            fills.extend(order_fills_C)
+            self.market_maker.apply_hedge_fills(order_fills_C, order_C.is_ask, FEES_TAKER_C)
 
-        #print(f"best_bid_A={self.order_book_A.best_bid}, best_ask_A={self.order_book_A.best_ask}")
+        # t4 = time()
+        # print(f"hedge took {t4 - t0} seconds")
+
+        # t0 = time()
+        # Then let the market maker make the market on A
+        self.market_maker.make_market(
+            self.order_book_A,
+            self.order_books_B[self.current_idx_B],
+            self.order_books_C[self.current_idx_C]
+        )
+        #print(f"[POST-MAKE] bid_A={self.order_book_A.best_bid}, ask_A={self.order_book_A.best_ask}, active_orders={len(self.market_maker._active_orders)}")
+
+        # t5 = time()
+        # print(f"make_market took {t5 - t0} seconds")
+
+        # Accumulate all fills on A for top trades reporting
+        for o, qty in fills_A_organic:
+            self._register_trade(
+                {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": "A"}
+            )
+        for o, qty in hft_fills_A:
+            self._register_trade(
+                {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": "A"}
+            )
+
         # Finally, update the backtesting report data and market maker metrics
+        # t6 = time()
         self.save_data(
             fill_rate={"bid": 0.0, "ask": 0.0},  # placeholder — fill rate MM calculé dans save_metrics
-            top_trades=self.get_top_trades(10),
+            top_trades=self.get_top_trades(SIMULATOR_TOP_TRADES_COUNT),
         )
         self.market_maker.save_metrics(
             order_book_A=self.order_book_A,
-            order_book_B=self.order_books_B[(self.current_idx_B - 20) % 21],  # t-200ms
-            order_book_C=self.order_books_C[(self.current_idx_C - 17) % 18],  # t-170ms
+            order_book_B=self.order_books_B[self.current_idx_B],
+            order_book_C=self.order_books_C[self.current_idx_C],
             timestamp=float(self.price_simulator._t_seconds),
             fills=fills,
             hft_snipe_count=hft_snipe_count,
             hft_snipe_qty=hft_snipe_qty,
         )
+        self.market_maker.advance_clock(self.price_simulator.dt_seconds)
+        # t7 = time()
+        # print(f"save_data took {t7 - t6} seconds")
 
-    def simulate_multiple_steps(self, steps: int, generate_200ms_history: bool = True):
-        # Generate 190ms of history for B and C
-        if generate_200ms_history:
-            self.simulate_200ms_history()
-
-        # Make the market on A given B and C 200ms and 170ms ago
-        self.market_maker.make_market(
-            self.order_book_A,
-            self.order_books_B[(self.current_idx_B - 20) % 21],
-            self.order_books_C[(self.current_idx_C - 17) % 18],
-        )
-
-        # Simulate the steps until the end
-        for i in range(steps):
+    def simulate_n_steps(self, n_steps: int = 1):
+        # The price simulator should have generated the prices for the next n_steps
+        for _ in range(n_steps):
             self.simulate_single_step()
-            if i % 500 == 0:
-                print(f"Step {i}/{steps} ({ (i/steps)*100:.1f}%) | Inv: {self.market_maker.EUR_quantity:.0f} EUR")
+            if _ % 5000 == 0:
+                print(f"======== Step {_} / {n_steps} completed =========")
+
+    def simulate_days(self, n_days: int = 1):
+        daily_steps = int(86_400 / self.price_simulator.dt_seconds)
+        for i in range(n_days):
+            self.price_simulator.generate_prices_for_simulation_day()
+            self.simulate_n_steps(daily_steps)
+            print(f"======== Day {i+1} completed =========")
 
 
 
-    def get_top_trades(self, n: int = 10) -> list[dict]:
-        raw_trades = sorted(self.all_trades, key=lambda x: x["quantity"], reverse=True)[:n]
+    def get_top_trades(self, n: int = SIMULATOR_TOP_TRADES_COUNT) -> list[dict]:
+        if n > SIMULATOR_TOP_TRADES_COUNT:
+            raw_trades = heapq.nlargest(n, self.all_trades, key=lambda x: x["quantity"])
+        else:
+            raw_trades = [x[2] for x in sorted(self._top_trades_heap, key=lambda x: x[0], reverse=True)[:n]]
         clean_trades = []
         for t in raw_trades:
             clean_trades.append({
                 "price": float(t["price"]),
                 "quantity": float(t["quantity"]),
-                "side": str(t["side"])
+                "Is Ask": t["is_ask"]
             })
         return clean_trades
 
 
 if __name__ == "__main__":
-    OB_A = OrderBook(lambda_a0=50.0, alpha=0.05, theta=0.1, lambda_mo=20.0, v_unit=50000)
-    OB_B = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
-    OB_C = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
-    MM = MarketMaker(EUR_quantity=500_000, USD_quantity=500_000, gamma=0.05, sigma=0.0005, kappa=100, T=1, s0=1.08500)
-    PS = EURUSDPriceSimulator(s0=1.15, dt_seconds=0.01)
+    OB_A = OrderBook(lambda_a0=LAMBDA_A0_A, alpha=ALPHA_A, theta=THETA_A, lambda_mo=LAMBDA_MO_A, v_unit=V_UNIT_A)
+    OB_B = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
+    OB_C = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
+    MM = MarketMaker(EUR_quantity=500_000, USD_quantity=500_000, gamma=BACKTEST_MM_GAMMA, sigma=BACKTEST_MM_SIGMA, kappa=BACKTEST_MM_KAPPA, T=1, s0=1.08500)
+    PS = EURUSDPriceSimulator(s0=1.15, dt_seconds=PRICE_SIM_DEFAULT_DT_SECONDS)
     HFT = HFT()
     SIM = MarketSimulator(OB_A, OB_B, OB_C, MM, PS, HFT)
-    SIM.simulate_multiple_steps(steps=1000, generate_200ms_history=True)
+    SIM.simulate_200ms_history()
+    # SIM.simulate_one_day()

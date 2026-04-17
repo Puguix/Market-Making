@@ -7,17 +7,10 @@ from dataclasses import dataclass, field
 
 from PoissonSimulation import ArrivalIntensity, PoissonGenerator
 
-LAMBDA_A0_B = 5.0
-ALPHA_B = 0.05
-THETA_B = 0.1
-LAMBDA_MO_B = 2.0
-V_UNIT_B = 100_000
-
-LAMBDA_A0_C = 5.0
-ALPHA_C = 0.05
-THETA_C = 0.1
-LAMBDA_MO_C = 2.0
-V_UNIT_C = 100_000
+from config import (
+    LAMBDA_A0_B, ALPHA_B, THETA_B, LAMBDA_MO_B, V_UNIT_B,
+    LAMBDA_A0_C, ALPHA_C, THETA_C, LAMBDA_MO_C, V_UNIT_C
+)
 
 # %%%%%%%%%%%%%%%% OBJECTS %%%%%%%%%%%%%%%%%%%
 

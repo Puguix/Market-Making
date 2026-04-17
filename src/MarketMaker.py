@@ -7,12 +7,10 @@ import time
 import os
 from typing import Optional
 
-FEES_TAKER_B = 0.0002
-FEES_TAKER_C = 0.0003
-FLUSH_INTERVAL = 1_000
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PARQUET_PATH_REALTIME = os.path.join(BASE_DIR, "metrics_realtime.parquet")
-PARQUET_PATH_AGGREGATED = os.path.join(BASE_DIR, "metrics_aggregated.parquet")
+from config import (
+    FEES_TAKER_B, FEES_TAKER_C, FLUSH_INTERVAL, BASE_DIR,
+    PARQUET_PATH_REALTIME, PARQUET_PATH_AGGREGATED
+)
 
 # %%%%%% Price Grid Methods %%%%%%
 
@@ -650,6 +648,7 @@ def test_making():
     order_book_C.add_limit_order(Order("C_BID_2", "bid", 1.0, 1_000_000))
     order_book_C.add_limit_order(Order("C_ASK_2", "ask", 1.3, 1_000_000))
 
+    # HERE TO CHECK MANUALLY FOR PARAMS    
     mm = MarketMaker(
         EUR_quantity=0.0,
         USD_quantity=1_000_000.0,

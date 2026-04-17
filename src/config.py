@@ -28,3 +28,8 @@ ALPHA_C = 0.05
 THETA_C = 0.1
 LAMBDA_MO_C = 2.0
 V_UNIT_C = 100_000
+
+# Constraint for Optim
+MAX_SPREAD_PIPS   = 5.0 # in pips
+MIN_QTY_QUOTED    = 100_000
+HEDGE_THRESHOLD   = 0.9

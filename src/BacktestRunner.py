@@ -52,7 +52,7 @@ class BacktestRunner:
             EUR_quantity=0.0, 
             USD_quantity=1_000_000.0,
             gamma=0.05,   
-            sigma=0.0005,        
+            sigma=0.0005,    
             kappa=100,         
             T=self.steps * self.dt,  
             s0=self.mid_start
@@ -154,6 +154,55 @@ class BacktestRunner:
         plt.savefig("full_backtest_report.png", dpi=300)
         print(">>> Rapport sauvegardé sous 'full_backtest_report.png'")
         plt.show()
+
+    def run_simulation_with_params(
+        self,
+        gamma: float,
+        kappa: float,
+        hedge_threshold: float,
+        delta_grid: float,
+        geo_increment: float,
+        qty_alpha: float,
+    ) -> "MarketSimulator":
+
+        self._cleanup()
+
+        ob_A = OrderBook(lambda_a0=50.0, alpha=0.05, theta=0.1, lambda_mo=20.0, v_unit=50000)
+
+        def build_organic_book(mid):
+            ob = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
+            for i in range(1, 11):
+                ob.add_limit_order(Order(f"B{i}", "bid", mid - i*0.0001, 500_000))
+                ob.add_limit_order(Order(f"A{i}", "ask", mid + i*0.0001, 500_000))
+            return ob
+
+        ob_B = build_organic_book(self.mid_start)
+        ob_C = build_organic_book(self.mid_start)
+
+        mm = MarketMaker(
+            EUR_quantity=0.0,
+            USD_quantity=1_000_000.0,
+            gamma=gamma,
+            sigma=0.0005,        # sera remplacé par l'estimation realized vol plus tard
+            kappa=kappa,
+            T=self.steps * self.dt,
+            s0=self.mid_start,
+        )
+        mm.hedge_threshold = hedge_threshold
+
+        sim = MarketSimulator(
+            order_book_A=ob_A,
+            order_book_B=ob_B,
+            order_book_C=ob_C,
+            market_maker=mm,
+            price_simulator=EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt, seed=42),
+            hft=HFT()
+        )
+
+        sim.simulate_multiple_steps(steps=self.steps, generate_200ms_history=True)
+        sim.market_maker._flush_to_parquet()
+        return sim
+    
 
 if __name__ == "__main__":
     # On simule 5000 steps = 50 secondes de marché à 10ms/step

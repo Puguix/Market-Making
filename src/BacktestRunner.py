@@ -60,7 +60,7 @@ class BacktestRunner:
             gamma=BACKTEST_MM_GAMMA,
             sigma=BACKTEST_MM_SIGMA,
             kappa=BACKTEST_MM_KAPPA,
-            T=self.steps * self.dt,  
+            T=self.steps * self.dt / 86_400 / 365,
             s0=self.mid_start
         )
 

@@ -323,7 +323,7 @@ class OrderBook:
                 self._insert(Order(self._new_order_id("sim_LO_ask"), True, ask_price, self.v_unit), self.asks)
 
         # 5. Market order arrivals
-        n_mo = PoissonGenerator(ArrivalIntensity(spread=0.0, alpha=0.0, lambda_0=self.lambda_mo * dt)).generate()
+        n_mo = PoissonGenerator(ArrivalIntensity(spread=self.spread, alpha=self.alpha, lambda_0=self.lambda_mo * dt)).generate()
         mo_fills = []
         for _ in range(n_mo):
             mo_fills.extend(self.add_market_order(random.random() > mo_buy_prob, self.v_unit))

@@ -49,6 +49,16 @@ class HFT:
             qty = min(qty_ask_A, qty_bid_C)
             orders_A.append(Order("__snipe__", True, best_ask_A, qty))
             orders_C.append(Order("__snipe__", False, best_bid_C, qty))
+        if best_bid_B * (1 - FEES_TAKER_B) > best_ask_C * (1 + FEES_TAKER_C):
+            # B bid over C ask -> buy C sell B
+            qty = min(qty_bid_B, qty_ask_C)
+            orders_B.append(Order("__snipe__", False, best_bid_B, qty))
+            orders_C.append(Order("__snipe__", True, best_ask_C, qty))
+        if best_ask_B * (1 + FEES_TAKER_B) < best_bid_C * (1 - FEES_TAKER_C):
+            # B ask under C bid -> sell C buy B
+            qty = min(qty_ask_B, qty_bid_C)
+            orders_B.append(Order("__snipe__", True, best_ask_B, qty))
+            orders_C.append(Order("__snipe__", False, best_bid_C, qty))
 
         return orders_A, orders_B, orders_C
 

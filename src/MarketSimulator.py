@@ -1,7 +1,7 @@
 import heapq
 import polars as pl
 from random import random
-from time import time
+from time import perf_counter
 
 from OrderBook import OrderBook
 from MarketMaker import MarketMaker
@@ -11,7 +11,7 @@ from PoissonSimulation import ArrivalIntensity, PoissonGenerator
 from config import (
     FEES_TAKER_B, FEES_TAKER_C, SIMULATOR_BUFFER_B_SIZE,
     SIMULATOR_BUFFER_C_SIZE, SIMULATOR_STEP_DT, SIMULATOR_HFT_LOOKBACK_STEPS,
-    SIMULATOR_HEDGE_LOOKBACK_B, SIMULATOR_HEDGE_LOOKBACK_C,
+    SIMULATOR_HEDGE_LOOKBACK_B, SIMULATOR_HEDGE_LOOKBACK_C, 
     SIMULATOR_TOP_TRADES_COUNT,
     SIMULATOR_RANDOM_BUY_PROB, SIMULATOR_ORGANIC_LAMBDA_SCALE,
     LAMBDA_A0_A, ALPHA_A, THETA_A, LAMBDA_MO_A, V_UNIT_A,
@@ -62,6 +62,33 @@ class MarketSimulator:
         self._report_schema = _REPORT_DATA_SCHEMA
         self._top_trades_heap: list[tuple[float, int, dict]] = []
         self._top_trade_seq = 0
+        self._single_step_count = 0
+
+    def _first_step_format_level(self, price, qty: float) -> str:
+        if price is None:
+            return "—"
+        return f"{price:.6f} × {qty:.0f}"
+
+    def _first_step_log_orderbooks(self, tag: str) -> None:
+        ob_a = self.order_book_A
+        ob_b = self.order_books_B[self.current_idx_B]
+        ob_c = self.order_books_C[self.current_idx_C]
+        ba, aa = ob_a.best_bid, ob_a.best_ask
+        bb, ab = ob_b.best_bid, ob_b.best_ask
+        bc, ac = ob_c.best_bid, ob_c.best_ask
+        print(f"  [first step] books — {tag}")
+        print(
+            f"    A: bid {self._first_step_format_level(ba[0], ba[1])} | "
+            f"ask {self._first_step_format_level(aa[0], aa[1])}"
+        )
+        print(
+            f"    B: bid {self._first_step_format_level(bb[0], bb[1])} | "
+            f"ask {self._first_step_format_level(ab[0], ab[1])}"
+        )
+        print(
+            f"    C: bid {self._first_step_format_level(bc[0], bc[1])} | "
+            f"ask {self._first_step_format_level(ac[0], ac[1])}"
+        )
 
     @property
     def data(self) -> pl.DataFrame:
@@ -189,18 +216,28 @@ class MarketSimulator:
 
     def simulate_single_step(self):
         fills = []
-        # t0 = time()
+        is_first = self._single_step_count == 0
+        if is_first:
+            print("======== [first step] simulate_single_step — detailed log ========")
+
+        def _lap_ms(label: str, t0: float) -> float:
+            dt_ms = (perf_counter() - t0) * 1000.0
+            if is_first:
+                print(f"  [first step] timing — {label}: {dt_ms:.3f} ms")
+            return perf_counter()
+
         # Simulate the evolution of the midprice and then reconstruct the orders
+        t0 = perf_counter()
         self.simulate_order_book_evolution()
         self.current_idx_B = (self.current_idx_B + 1) % SIMULATOR_BUFFER_B_SIZE
         self.current_idx_C = (self.current_idx_C + 1) % SIMULATOR_BUFFER_C_SIZE
-        # t1 = time()
-        # print(f"simulate_order_book_evolution took {t1 - t0} seconds")
+        t0 = _lap_ms("simulate_order_book_evolution + buffer advance", t0)
+        if is_first:
+            self._first_step_log_orderbooks("after order book evolution (B/C stepped)")
 
-        # t0 = time()
         # HFT snipes orders on A given B and C 50ms ago
         orders_A, orders_B, orders_C = self.hft.snipe(
-            self.order_book_A, 
+            self.order_book_A,
             self.order_books_B[(self.current_idx_B - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_B_SIZE],
             self.order_books_C[(self.current_idx_C - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_C_SIZE]
         )
@@ -222,29 +259,35 @@ class MarketSimulator:
         for order_C in orders_C:
             self.order_books_C[self.current_idx_C].add_limit_order(order_C)
 
-        # t2 = time()
-        # print(f"snipe took {t2 - t1} seconds")
+        t0 = _lap_ms("HFT snipe + apply orders on A/B/C", t0)
+        if is_first:
+            self._first_step_log_orderbooks("after HFT")
+            print(
+                f"  [first step] HFT: {hft_snipe_count} snipe orders on A "
+                f"(total qty {hft_snipe_qty:.0f}), B/C child orders {len(orders_B)}/{len(orders_C)}"
+            )
 
         # Organic MOs on A : spot already shifted with _shift_prices
-        # MOs generate fills on MM orders without moving the mid again.
-        # t0 = time()
         n_mo = PoissonGenerator(ArrivalIntensity(
-            spread=0.0, alpha=0.0, 
+            spread=self.order_book_A.spread, alpha=ALPHA_A,
             lambda_0=self.order_book_A.lambda_mo * SIMULATOR_ORGANIC_LAMBDA_SCALE
         )).generate()
 
         fills_A_organic = []
         for _ in range(n_mo):
             fills_A_organic.extend(self.order_book_A.add_market_order(random() > SIMULATOR_RANDOM_BUY_PROB, self.order_book_A.v_unit))
-        #print(f"[MOs] n_mo={n_mo}, fills={len(fills_A_organic)}")
 
         fills.extend(fills_A_organic)
         self.market_maker.update_inventory_from_fills(fills_A_organic)
 
-        # t3 = time()
-        # print(f"organic MOs took {t3 - t0} seconds")
+        t0 = _lap_ms("organic market orders on A", t0)
+        if is_first:
+            self._first_step_log_orderbooks("after organic MOs on A")
+            print(
+                f"  [first step] organic MOs: sampled count n_mo={n_mo}, "
+                f"fill events on A={len(fills_A_organic)}"
+            )
 
-        # t0 = time()
         # MM hedges after all arrivals (LO/MO/HFT), before quoting
         order_B, order_C = self.market_maker.check_and_hedge(
             self.order_books_B[self.current_idx_B],
@@ -260,22 +303,34 @@ class MarketSimulator:
             fills.extend(order_fills_C)
             self.market_maker.apply_hedge_fills(order_fills_C, order_C.is_ask, FEES_TAKER_C)
 
-        # t4 = time()
-        # print(f"hedge took {t4 - t0} seconds")
+        t0 = _lap_ms("MM check_and_hedge + hedge MO execution on B/C", t0)
+        if is_first:
+            self._first_step_log_orderbooks("after MM hedge on B/C")
+            side_b = f"{'ask' if order_B.is_ask else 'bid'} {order_B.quantity:.0f}" if order_B else "none"
+            side_c = f"{'ask' if order_C.is_ask else 'bid'} {order_C.quantity:.0f}" if order_C else "none"
+            print(f"  [first step] MM hedge choice: venue B → {side_b}, venue C → {side_c}")
 
-        # t0 = time()
         # Then let the market maker make the market on A
         self.market_maker.make_market(
             self.order_book_A,
             self.order_books_B[self.current_idx_B],
             self.order_books_C[self.current_idx_C]
         )
-        #print(f"[POST-MAKE] bid_A={self.order_book_A.best_bid}, ask_A={self.order_book_A.best_ask}, active_orders={len(self.market_maker._active_orders)}")
 
-        # t5 = time()
-        # print(f"make_market took {t5 - t0} seconds")
+        t0 = _lap_ms("make_market on A", t0)
+        if is_first:
+            self._first_step_log_orderbooks("after make_market")
+            mm = self.market_maker
+            posted = getattr(mm, "_last_posted_mid", None)
+            active = getattr(mm, "_active_orders", {})
+            print(f"  [first step] MM make_market: last_posted_mid={posted}, active A levels={len(active)}")
+            for level_key in sorted(active.keys()):
+                rows = active[level_key]
+                qsum = sum(q for _, q in rows)
+                print(f"    {level_key}: qty_target≈{qsum:.0f} ({len(rows)} order slot(s))")
 
         # Accumulate all fills on A for top trades reporting
+        t0 = perf_counter()
         for o, qty in fills_A_organic:
             self._register_trade(
                 {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": "A"}
@@ -284,9 +339,8 @@ class MarketSimulator:
             self._register_trade(
                 {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": "A"}
             )
+        t0 = _lap_ms("register A-side trades for reporting", t0)
 
-        # Finally, update the backtesting report data and market maker metrics
-        # t6 = time()
         self.save_data(
             fill_rate={"bid": 0.0, "ask": 0.0},  # placeholder — fill rate MM calculé dans save_metrics
             top_trades=self.get_top_trades(SIMULATOR_TOP_TRADES_COUNT),
@@ -301,8 +355,9 @@ class MarketSimulator:
             hft_snipe_qty=hft_snipe_qty,
         )
         self.market_maker.advance_clock(self.price_simulator.dt_seconds)
-        # t7 = time()
-        # print(f"save_data took {t7 - t6} seconds")
+        _lap_ms("save_data + save_metrics + advance_clock", t0)
+
+        self._single_step_count += 1
 
     def simulate_n_steps(self, n_steps: int = 1):
         # The price simulator should have generated the prices for the next n_steps

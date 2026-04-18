@@ -1,6 +1,9 @@
 from OrderBook import OrderBook, Order
 
-from config import FEES_TAKER_A, FEES_MAKER_A, FEES_TAKER_B, FEES_MAKER_B, FEES_TAKER_C, FEES_MAKER_C
+from config import (
+    FEES_TAKER_A, FEES_MAKER_A, FEES_TAKER_B, FEES_MAKER_B, FEES_TAKER_C, FEES_MAKER_C,
+    LAMBDA_A0_B, ALPHA_B, THETA_B, LAMBDA_MO_B, V_UNIT_B
+)
 
 
 class HFT:
@@ -29,43 +32,53 @@ class HFT:
         if best_bid_A * (1 - FEES_TAKER_A) > best_ask_B * (1 + FEES_TAKER_B):
             # A bid over B ask -> buy B sell A
             qty = min(qty_bid_A, qty_ask_B)
-            orders_A.append(Order("__snipe__", "ask", best_bid_A, qty))
-            orders_B.append(Order("__snipe__", "bid", best_ask_B, qty))
+            orders_A.append(Order("__snipe__", False, best_bid_A, qty))
+            orders_B.append(Order("__snipe__", True, best_ask_B, qty))
         if best_ask_A * (1 + FEES_TAKER_A) < best_bid_B * (1 - FEES_TAKER_B):
             # A ask under B bid -> sell B buy A
             qty = min(qty_ask_A, qty_bid_B)
-            orders_A.append(Order("__snipe__", "bid", best_ask_A, qty))
-            orders_B.append(Order("__snipe__", "ask", best_bid_B, qty))
+            orders_A.append(Order("__snipe__", True, best_ask_A, qty))
+            orders_B.append(Order("__snipe__", False, best_bid_B, qty))
         if best_bid_A * (1 - FEES_TAKER_A) > best_ask_C * (1 + FEES_TAKER_C):
             # A bid over C ask -> buy C sell A
             qty = min(qty_bid_A, qty_ask_C)
-            orders_A.append(Order("__snipe__", "ask", best_bid_A, qty))
-            orders_C.append(Order("__snipe__", "bid", best_ask_C, qty))
+            orders_A.append(Order("__snipe__", False, best_bid_A, qty))
+            orders_C.append(Order("__snipe__", True, best_ask_C, qty))
         if best_ask_A * (1 + FEES_TAKER_A) < best_bid_C * (1 - FEES_TAKER_C):
             # A ask under C bid -> sell C buy A
             qty = min(qty_ask_A, qty_bid_C)
-            orders_A.append(Order("__snipe__", "bid", best_ask_A, qty))
-            orders_C.append(Order("__snipe__", "ask", best_bid_C, qty))
+            orders_A.append(Order("__snipe__", True, best_ask_A, qty))
+            orders_C.append(Order("__snipe__", False, best_bid_C, qty))
+        if best_bid_B * (1 - FEES_TAKER_B) > best_ask_C * (1 + FEES_TAKER_C):
+            # B bid over C ask -> buy C sell B
+            qty = min(qty_bid_B, qty_ask_C)
+            orders_B.append(Order("__snipe__", False, best_bid_B, qty))
+            orders_C.append(Order("__snipe__", True, best_ask_C, qty))
+        if best_ask_B * (1 + FEES_TAKER_B) < best_bid_C * (1 - FEES_TAKER_C):
+            # B ask under C bid -> sell C buy B
+            qty = min(qty_ask_B, qty_bid_C)
+            orders_B.append(Order("__snipe__", True, best_ask_B, qty))
+            orders_C.append(Order("__snipe__", False, best_bid_C, qty))
 
         return orders_A, orders_B, orders_C
 
 
 if __name__ == "__main__":
-    order_book_A = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=2.0, v_unit=100000)
-    order_book_B = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=2.0, v_unit=100000)
-    order_book_C = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=2.0, v_unit=100000)
+    order_book_A = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
+    order_book_B = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
+    order_book_C = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
 
     # Exchange A reference book
-    order_book_A.add_limit_order(Order("A_BID_1", "bid", 1.1000, 300_000))
-    order_book_A.add_limit_order(Order("A_ASK_1", "ask", 1.1004, 200_000))
+    order_book_A.add_limit_order(Order("A_BID_1", False, 1.1000, 300_000))
+    order_book_A.add_limit_order(Order("A_ASK_1", True, 1.1004, 200_000))
 
     # Exchange B has a cheap ask -> should trigger A bid vs B ask arbitrage
-    order_book_B.add_limit_order(Order("B_BID_1", "bid", 1.0985, 250_000))
-    order_book_B.add_limit_order(Order("B_ASK_1", "ask", 1.0990, 150_000))
+    order_book_B.add_limit_order(Order("B_BID_1", False, 1.0985, 250_000))
+    order_book_B.add_limit_order(Order("B_ASK_1", True, 1.0990, 150_000))
 
     # Exchange C has an expensive bid -> should trigger A ask vs C bid arbitrage
-    order_book_C.add_limit_order(Order("C_BID_1", "bid", 1.1012, 120_000))
-    order_book_C.add_limit_order(Order("C_ASK_1", "ask", 1.1016, 250_000))
+    order_book_C.add_limit_order(Order("C_BID_1", False, 1.1012, 120_000))
+    order_book_C.add_limit_order(Order("C_ASK_1", True, 1.1016, 250_000))
 
     hft = HFT()
     orders_A, orders_B, orders_C = hft.snipe(order_book_A, order_book_B, order_book_C)

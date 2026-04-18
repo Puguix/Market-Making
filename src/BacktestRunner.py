@@ -5,20 +5,34 @@ import seaborn as sns
 import numpy as np
 
 # Import de tes classes existantes
-from OrderBook import OrderBook, Order
+from OrderBook import OrderBook
 from MarketMaker import MarketMaker, PARQUET_PATH_AGGREGATED, PARQUET_PATH_REALTIME
 from EURUSDPriceSimulator import EURUSDPriceSimulator
 from MarketSimulator import MarketSimulator
 from HFT import HFT
+from config import (
+    BACKTEST_DEFAULT_STEPS, BACKTEST_DEFAULT_DT, BACKTEST_MID_START,
+    BACKTEST_MM_EUR_QUANTITY, BACKTEST_MM_USD_QUANTITY, BACKTEST_MM_GAMMA,
+    BACKTEST_MM_SIGMA, BACKTEST_MM_KAPPA,
+    LAMBDA_A0_A, ALPHA_A, THETA_A, LAMBDA_MO_A, V_UNIT_A,
+    FILL_RATE_YMAX_MULTIPLIER, FALLBACK_FILL_RATE_YMAX,
+    INVENTORY_ALERT_LINE_PCT, INVENTORY_YMAX_PCT, PIPS_MULTIPLIER,
+    HFT_MARKER_SIZE_DIVISOR, PLOT_FIGSIZE, PLOT_GRIDSPEC_ROWS,
+    PLOT_GRIDSPEC_COLS, PLOT_DPI, TABLE_FONT_SIZE, TABLE_SCALE_X,
+    TABLE_SCALE_Y, BACKTEST_REPORT_PATH, LAMBDA_A0_B, ALPHA_B, THETA_B,
+    LAMBDA_MO_B, V_UNIT_B, LAMBDA_A0_C, ALPHA_C, THETA_C, LAMBDA_MO_C, V_UNIT_C,
+    SIMULATOR_HEDGE_LOOKBACK_B, SIMULATOR_HEDGE_LOOKBACK_C,
+    SIMULATOR_BUFFER_B_SIZE, SIMULATOR_BUFFER_C_SIZE
+)
 
 # Mandatory comment as per instructions:
 # This implementation follows a heuristic-first market making approach under latency constraints.
 
 class BacktestRunner:
-    def __init__(self, steps=5000, dt=0.00001):
+    def __init__(self, steps: int = BACKTEST_DEFAULT_STEPS, dt: float = BACKTEST_DEFAULT_DT):
         self.steps = steps
         self.dt = dt
-        self.mid_start = 1.0850
+        self.mid_start = BACKTEST_MID_START
         
         # Chemins des fichiers
         self.paths = ["metrics_realtime.parquet", "metrics_aggregated.parquet"]
@@ -35,41 +49,45 @@ class BacktestRunner:
         print(f">>> Démarrage de la simulation ({self.steps} steps)...")
         
         # 1. Setup des OrderBooks
-        ob_A = OrderBook(lambda_a0=50.0, alpha=0.05, theta=0.1, lambda_mo=20.0, v_unit=50000)
-
-        def build_organic_book(mid):
-            ob = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
-            for i in range(1, 11):
-                ob.add_limit_order(Order(f"B{i}", "bid", mid - i*0.0001, 500_000))
-                ob.add_limit_order(Order(f"A{i}", "ask", mid + i*0.0001, 500_000))
-            return ob
-
-        ob_B = build_organic_book(self.mid_start)
-        ob_C = build_organic_book(self.mid_start)
+        ob_A = OrderBook(lambda_a0=LAMBDA_A0_A, alpha=ALPHA_A, theta=THETA_A, lambda_mo=LAMBDA_MO_A, v_unit=V_UNIT_A)
+        ob_B = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B).build_organic_book(self.mid_start)
+        ob_C = OrderBook(lambda_a0=LAMBDA_A0_C, alpha=ALPHA_C, theta=THETA_C, lambda_mo=LAMBDA_MO_C, v_unit=V_UNIT_C).build_organic_book(self.mid_start)
 
         # 2. Setup du Market Maker (Phase 1 Heuristique)
         mm = MarketMaker(
-            EUR_quantity=0.0, 
-            USD_quantity=1_000_000.0,
-            gamma=0.05,   
-            sigma=0.0005,    
-            kappa=100,         
-            T=self.steps * self.dt,  
+            EUR_quantity=BACKTEST_MM_EUR_QUANTITY,
+            USD_quantity=BACKTEST_MM_USD_QUANTITY,
+            gamma=BACKTEST_MM_GAMMA,
+            sigma=BACKTEST_MM_SIGMA,
+            kappa=BACKTEST_MM_KAPPA,
+            T=self.steps * self.dt / 86_400 / 365,
             s0=self.mid_start
         )
 
         # 3. Setup du Simulateur
+        price_simulator = EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt)
         sim = MarketSimulator(
             order_book_A=ob_A,
             order_book_B=ob_B,
             order_book_C=ob_C,
             market_maker=mm,
-            price_simulator=EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt),
+            price_simulator=price_simulator,
             hft=HFT()
         )
 
-        # 4. Exécution
-        sim.simulate_multiple_steps(steps=self.steps, generate_200ms_history=True)
+        # 4. Set up de 200ms de data sur B et C
+        price_simulator.generate_prices(SIMULATOR_BUFFER_B_SIZE + self.steps)
+        sim.simulate_200ms_history()
+
+        # 5. Make the market on A
+        mm.make_market(
+            sim.order_book_A,
+            sim.order_books_B[(sim.current_idx_B - SIMULATOR_HEDGE_LOOKBACK_B) % SIMULATOR_BUFFER_B_SIZE],
+            sim.order_books_C[(sim.current_idx_C - SIMULATOR_HEDGE_LOOKBACK_C) % SIMULATOR_BUFFER_C_SIZE],
+        )
+
+        # 6. Execution
+        sim.simulate_n_steps(n_steps=self.steps)
         sim.market_maker._flush_to_parquet() 
         print(f">>> Fichiers écrits dans : {os.path.dirname(PARQUET_PATH_AGGREGATED)}")
         print(">>> Simulation terminée. Analyse des données...")
@@ -87,8 +105,8 @@ class BacktestRunner:
         df_rt = pl.read_parquet(path_rt)
         df_agg = pl.read_parquet(path_agg)
 
-        fig = plt.figure(figsize=(18, 14))
-        gs = fig.add_gridspec(4, 2)
+        fig = plt.figure(figsize=PLOT_FIGSIZE)
+        gs = fig.add_gridspec(PLOT_GRIDSPEC_ROWS, PLOT_GRIDSPEC_COLS)
 
         # --- GRAPH 1: PnL Evolution ---
         ax1 = fig.add_subplot(gs[0, 0])
@@ -100,9 +118,9 @@ class BacktestRunner:
         # --- GRAPH 2: Inventory & Skew ---
         ax2 = fig.add_subplot(gs[0, 1])
         ax2.plot(df_rt["timestamp"], df_rt["inventory_pct"] * 100, color="#ff7f0e", label="Inventory % Usage")
-        ax2.axhline(70, color='r', linestyle='--', alpha=0.5, label="Alert Threshold")
+        ax2.axhline(INVENTORY_ALERT_LINE_PCT, color='r', linestyle='--', alpha=0.5, label="Alert Threshold")
         ax2.set_title("Utilisation de la Limite d'Inventaire (%)", fontsize=14, fontweight='bold')
-        ax2.set_ylim(0, 100)
+        ax2.set_ylim(0, INVENTORY_YMAX_PCT)
         ax2.legend()
 
         # --- GRAPH 3: Price & Reservation Price ---
@@ -114,13 +132,13 @@ class BacktestRunner:
 
         # --- GRAPH 4: Quoted Spread vs Sniping ---
         ax4 = fig.add_subplot(gs[1, 1])
-        ax4.plot(df_agg["timestamp"], df_agg["spread_quoted"] * 10000, label="Spread A (pips)", color="green")
+        ax4.plot(df_agg["timestamp"], df_agg["spread_quoted"] * PIPS_MULTIPLIER, label="Spread A (pips)", color="green")
         ax4.set_title("Spread Quoté sur A (Pips)", fontsize=14, fontweight='bold')
         ax4.set_ylabel("Pips")
 
         # --- GRAPH 5: Sniping Activity ---
         ax5 = fig.add_subplot(gs[2, 0])
-        ax5.scatter(df_agg["timestamp"], df_agg["hft_snipe_count"], s=df_agg["hft_snipe_qty"]/1000, 
+        ax5.scatter(df_agg["timestamp"], df_agg["hft_snipe_count"], s=df_agg["hft_snipe_qty"] / HFT_MARKER_SIZE_DIVISOR,
                     alpha=0.5, c="red", label="HFT Snipes")
         ax5.set_title("Activité de Sniping HFT (Taille = Volume)", fontsize=14, fontweight='bold')
         ax5.set_ylabel("Nombre d'attaques")
@@ -130,7 +148,7 @@ class BacktestRunner:
         avg_fills = [df_agg["fill_rate_bid"].mean(), df_agg["fill_rate_ask"].mean()]
         ax6.bar(["Bid Fill Rate", "Ask Fill Rate"], avg_fills, color=["#1f77b4", "#d62728"])
         ax6.set_title("Taux d'exécution moyen (Fill Rates)", fontsize=14, fontweight='bold')
-        ax6.set_ylim(0, max(avg_fills)*1.5 if any(avg_fills) else 1)
+        ax6.set_ylim(0, max(avg_fills) * FILL_RATE_YMAX_MULTIPLIER if any(avg_fills) else FALLBACK_FILL_RATE_YMAX)
 
         # --- TABLEAU DE STATS (Bas du graph) ---
         ax_table = fig.add_subplot(gs[3, :])
@@ -147,11 +165,11 @@ class BacktestRunner:
             the_table = ax_table.table(cellText=cell_text, colLabels=["Métrique", "Valeur"], 
                                       loc='center', cellLoc='left')
             the_table.auto_set_font_size(False)
-            the_table.set_fontsize(10)
-            the_table.scale(1, 1.5)
+            the_table.set_fontsize(TABLE_FONT_SIZE)
+            the_table.scale(TABLE_SCALE_X, TABLE_SCALE_Y)
 
         plt.tight_layout()
-        plt.savefig("full_backtest_report.png", dpi=300)
+        plt.savefig(BACKTEST_REPORT_PATH, dpi=PLOT_DPI)
         print(">>> Rapport sauvegardé sous 'full_backtest_report.png'")
         plt.show()
 
@@ -205,7 +223,6 @@ class BacktestRunner:
     
 
 if __name__ == "__main__":
-    # On simule 5000 steps = 50 secondes de marché à 10ms/step
-    runner = BacktestRunner(steps=5000)
+    runner = BacktestRunner(steps=5_000)
     simulator = runner.run_simulation()
     runner.analyze_and_plot(simulator)

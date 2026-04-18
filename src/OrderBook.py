@@ -1,6 +1,5 @@
 from collections import deque
 from sortedcontainers import SortedDict
-import time
 import math
 import random
 from dataclasses import dataclass, field
@@ -9,7 +8,13 @@ from PoissonSimulation import ArrivalIntensity, PoissonGenerator
 
 from config import (
     LAMBDA_A0_B, ALPHA_B, THETA_B, LAMBDA_MO_B, V_UNIT_B,
-    LAMBDA_A0_C, ALPHA_C, THETA_C, LAMBDA_MO_C, V_UNIT_C
+    LAMBDA_A0_C, ALPHA_C, THETA_C, LAMBDA_MO_C, V_UNIT_C,
+    ORGANIC_BOOK_DEPTH_LEVELS, ORGANIC_BOOK_LEVEL_QTY, DEFAULT_TICK_SIZE,
+    ORDERBOOK_DEFAULT_LEVELS, ORDERBOOK_DEFAULT_TICK_SIZE,
+    ORDERBOOK_DEFAULT_MO_BUY_PROB, ORDERBOOK_ADVANCED_TEST_LEVEL_COUNT,
+    ORDERBOOK_ADVANCED_TEST_STEPS, ORDERBOOK_ADVANCED_TEST_SNAPSHOT_INTERVAL,
+    ORDERBOOK_ADVANCED_TEST_RANDOM_SEED, ORDERBOOK_ADVANCED_TEST_DT,
+    ORDERBOOK_ADVANCED_TEST_DRIFT_SCALE, ORDERBOOK_ADVANCED_TEST_BOOK_DEPTH
 )
 
 # %%%%%%%%%%%%%%%% OBJECTS %%%%%%%%%%%%%%%%%%%
@@ -17,10 +22,10 @@ from config import (
 @dataclass
 class Order:
     order_id: str
-    side: str          # 'bid' or 'ask'
+    is_ask: bool
     price: float
     quantity: float
-    timestamp: float = field(default_factory=time.time)
+    # timestamp: float = field(default_factory=time.time)
 
 
 class PriceLevel:
@@ -94,11 +99,40 @@ class OrderBook:
         self.asks: SortedDict = SortedDict() # empty sorted dict
         self.bids: SortedDict = SortedDict(lambda p: -p) # invertly sorted dict (we want to see higher prices first for bids)
         self._orders: dict[str, Order] = {}  # id → order
+        self._order_id_seq: int = 0
         self.lambda_a0 = lambda_a0
         self.alpha = alpha
         self.theta = theta
         self.lambda_mo = lambda_mo
         self.v_unit = v_unit
+
+    def _new_order_id(self, prefix: str) -> str:
+        self._order_id_seq += 1
+        return f"{prefix}_{self._order_id_seq}"
+
+    def copy(self) -> "OrderBook":
+        """Structural copy for ring-buffer evolution (avoids copy.deepcopy)."""
+        ob = OrderBook(self.lambda_a0, self.alpha, self.theta, self.lambda_mo, self.v_unit)
+        ob._order_id_seq = self._order_id_seq
+        for _price, level in self.bids.items():
+            for o in level.queue:
+                ob._insert(Order(o.order_id, o.is_ask, o.price, o.quantity), ob.bids)
+        for _price, level in self.asks.items():
+            for o in level.queue:
+                ob._insert(Order(o.order_id, o.is_ask, o.price, o.quantity), ob.asks)
+        return ob
+
+    def build_organic_book(
+        self,
+        mid: float,
+        depth_levels: int = ORGANIC_BOOK_DEPTH_LEVELS,
+        level_qty: float = ORGANIC_BOOK_LEVEL_QTY,
+        tick_size: float = DEFAULT_TICK_SIZE,
+    ) -> "OrderBook":
+        for i in range(1, depth_levels + 1):
+            self.add_limit_order(Order(f"B{i}", False, mid - i * tick_size, level_qty))
+            self.add_limit_order(Order(f"A{i}", True, mid + i * tick_size, level_qty))
+        return self
 
     # === protected methods ===
     def _insert(self, order: Order, side: SortedDict[float, PriceLevel])->None:
@@ -179,28 +213,28 @@ class OrderBook:
             The filled order if any (if there is no crossable order it should return an empty list)
         """
         fills = []
-        if order.side == 'bid':
-            fills = self._match(order, self.asks, lambda ask_p: ask_p <= order.price) # checking if there are prices to cross
-            if order.quantity > 0: # still order to place ?
-                self._insert(order, self.bids) # insert bid
-        else:
+        if order.is_ask:
             fills = self._match(order, self.bids, lambda bid_p: bid_p >= order.price)
             if order.quantity > 0:
                 self._insert(order, self.asks)
+        else:
+            fills = self._match(order, self.asks, lambda ask_p: ask_p <= order.price) # checking if there are prices to cross
+            if order.quantity > 0: # still order to place ?
+                self._insert(order, self.bids) # insert bid
         return fills
 
-    def add_market_order(self, side: str, qty: float) -> list[tuple[Order, float]]:
-        dummy = Order("__market__", side, float('inf') if side == 'bid' else 0.0, qty)
-        if side == 'bid':
-            return self._match(dummy, self.asks, lambda ask_p: ask_p <= dummy.price)
-        else:
+    def add_market_order(self, is_ask: bool, qty: float) -> list[tuple[Order, float]]:
+        dummy = Order("__market__", is_ask, float('inf') if not is_ask else 0.0, qty)
+        if is_ask:
             return self._match(dummy, self.bids, lambda bid_p: bid_p >= dummy.price)
+        else:
+            return self._match(dummy, self.asks, lambda ask_p: ask_p <= dummy.price)
 
     def cancel(self, order_id: str) -> bool:
         order = self._orders.pop(order_id, None)
         if not order:
             return False
-        side = self.bids if order.side == 'bid' else self.asks
+        side = self.asks if order.is_ask else self.bids
         if order.price in side:
             side[order.price].cancel(order_id)
             if not side[order.price]:
@@ -241,9 +275,9 @@ class OrderBook:
         self,
         new_mid: float,
         dt: float,
-        mo_buy_prob: float = 0.5,
-        n_levels: int = 20,
-        tick: float = 0.0001,
+        mo_buy_prob: float = ORDERBOOK_DEFAULT_MO_BUY_PROB,
+        n_levels: int = ORDERBOOK_DEFAULT_LEVELS,
+        tick: float = ORDERBOOK_DEFAULT_TICK_SIZE,
     ) -> tuple["OrderBook", list]:
 
         # 1. Shift all existing prices to follow the new mid
@@ -282,18 +316,17 @@ class OrderBook:
 
             n_arr_bid = PoissonGenerator(ArrivalIntensity(spread=delta_pips, alpha=self.alpha, lambda_0=self.lambda_a0 * dt)).generate()
             for _ in range(n_arr_bid):
-                self._insert(Order(f"sim_LO_bid_{time.time_ns()}", "bid", bid_price, self.v_unit), self.bids)
+                self._insert(Order(self._new_order_id("sim_LO_bid"), False, bid_price, self.v_unit), self.bids)
 
             n_arr_ask = PoissonGenerator(ArrivalIntensity(spread=delta_pips, alpha=self.alpha, lambda_0=self.lambda_a0 * dt)).generate()
             for _ in range(n_arr_ask):
-                self._insert(Order(f"sim_LO_ask_{time.time_ns()}", "ask", ask_price, self.v_unit), self.asks)
+                self._insert(Order(self._new_order_id("sim_LO_ask"), True, ask_price, self.v_unit), self.asks)
 
         # 5. Market order arrivals
-        n_mo = PoissonGenerator(ArrivalIntensity(spread=0.0, alpha=0.0, lambda_0=self.lambda_mo * dt)).generate()
+        n_mo = PoissonGenerator(ArrivalIntensity(spread=self.spread, alpha=self.alpha, lambda_0=self.lambda_mo * dt)).generate()
         mo_fills = []
         for _ in range(n_mo):
-            side = "bid" if random.random() < mo_buy_prob else "ask"
-            mo_fills.extend(self.add_market_order(side, self.v_unit))
+            mo_fills.extend(self.add_market_order(random.random() > mo_buy_prob, self.v_unit))
 
         # 6. Empty or one-sided book: Poisson LOs can leave a side empty; mid is then undefined.
         #    Seed inner quotes around new_mid (same grid as step 4), respecting any existing top of book.
@@ -304,11 +337,11 @@ class OrderBook:
             ask_px, _ = self.best_ask
             if bid_px is None:
                 tb = inner_bid if ask_px is None else round(min(inner_bid, ask_px - tick), 4)
-                self._insert(Order(f"sim_LO_bid_{time.time_ns()}", "bid", tb, self.v_unit), self.bids)
+                self._insert(Order(self._new_order_id("sim_LO_bid"), False, tb, self.v_unit), self.bids)
                 bid_px, _ = self.best_bid
             if ask_px is None:
                 ta = inner_ask if bid_px is None else round(max(inner_ask, bid_px + tick), 4)
-                self._insert(Order(f"sim_LO_ask_{time.time_ns()}", "ask", ta, self.v_unit), self.asks)
+                self._insert(Order(self._new_order_id("sim_LO_ask"), True, ta, self.v_unit), self.asks)
 
         return self, mo_fills
 
@@ -338,19 +371,19 @@ def test_basic():
     ob = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
 
     # Populate bids
-    ob.add_limit_order(Order("B1", "bid", 1.08500, 1_000_000))
-    ob.add_limit_order(Order("B2", "bid", 1.08500,   500_000))
-    ob.add_limit_order(Order("B3", "bid", 1.08480, 2_000_000))
-    ob.add_limit_order(Order("B4", "bid", 1.08460, 3_000_000))
-    ob.add_limit_order(Order("B5", "bid", 1.08440, 1_500_000))
-    ob.add_limit_order(Order("B6", "bid", 1.08420, 2_500_000))
+    ob.add_limit_order(Order("B1", False, 1.08500, 1_000_000))
+    ob.add_limit_order(Order("B2", False, 1.08500,   500_000))
+    ob.add_limit_order(Order("B3", False, 1.08480, 2_000_000))
+    ob.add_limit_order(Order("B4", False, 1.08460, 3_000_000))
+    ob.add_limit_order(Order("B5", False, 1.08440, 1_500_000))
+    ob.add_limit_order(Order("B6", False, 1.08420, 2_500_000))
 
     # Populate asks
-    ob.add_limit_order(Order("A1", "ask", 1.08520,   800_000))
-    ob.add_limit_order(Order("A2", "ask", 1.08540, 1_500_000))
-    ob.add_limit_order(Order("A3", "ask", 1.08560, 2_000_000))
-    ob.add_limit_order(Order("A4", "ask", 1.08580, 1_000_000))
-    ob.add_limit_order(Order("A5", "ask", 1.08600, 3_000_000))
+    ob.add_limit_order(Order("A1", True, 1.08520,   800_000))
+    ob.add_limit_order(Order("A2", True, 1.08540, 1_500_000))
+    ob.add_limit_order(Order("A3", True, 1.08560, 2_000_000))
+    ob.add_limit_order(Order("A4", True, 1.08580, 1_000_000))
+    ob.add_limit_order(Order("A5", True, 1.08600, 3_000_000))
 
     print("=== Book initial ===")
     ob.print_book()
@@ -362,28 +395,28 @@ def test_basic():
 
     # Limit order that matches B1 (FIFO : B1 before B2)
     print(">>> Limit ask 1.08500 pour 900k (matche B1 en FIFO)")
-    fills = ob.add_limit_order(Order("X1", "ask", 1.08500, 900_000))
+    fills = ob.add_limit_order(Order("X1", True, 1.08500, 900_000))
     for passive, qty in fills:
         print(f"    fill: order {passive.order_id} @ {passive.price:.5f} x {qty:,.0f}")
     ob.print_book()
 
     # Market order buy
     print(">>> Market buy 2M")
-    fills = ob.add_market_order("bid", 2_000_000)
+    fills = ob.add_market_order(False, 2_000_000)
     for passive, qty in fills:
         print(f"    fill: order {passive.order_id} @ {passive.price:.5f} x {qty:,.0f}")
     ob.print_book()
 
 
 def test_advanced():
-    random.seed(42)
+    random.seed(ORDERBOOK_ADVANCED_TEST_RANDOM_SEED)
 
     ob = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
     base_mid = 1.08500
-    tick = 0.0001  # 1 pip
+    tick = ORDERBOOK_DEFAULT_TICK_SIZE  # 1 pip
 
     # Build a deep book: many levels on each side around base_mid
-    level_count = 50
+    level_count = ORDERBOOK_ADVANCED_TEST_LEVEL_COUNT
     for i in range(1, level_count + 1):
         bid_price = base_mid - i * tick
         ask_price = base_mid + i * tick
@@ -391,27 +424,27 @@ def test_advanced():
         bid_qty = random.randint(1, 10) * 100_000
         ask_qty = random.randint(1, 10) * 100_000
 
-        ob.add_limit_order(Order(f"HB_B{i}", "bid", bid_price, bid_qty))
-        ob.add_limit_order(Order(f"HB_A{i}", "ask", ask_price, ask_qty))
+        ob.add_limit_order(Order(f"HB_B{i}", False, bid_price, bid_qty))
+        ob.add_limit_order(Order(f"HB_A{i}", True, ask_price, ask_qty))
 
     print("=== Heavy book initial snapshot ===")
     ob.print_book(depth=10)
 
     # Simulate several evolution steps with a slowly drifting mid-price
-    dt = 0.01
+    dt = ORDERBOOK_ADVANCED_TEST_DT
 
     new_mid = base_mid
-    for step in range(100):
+    for step in range(ORDERBOOK_ADVANCED_TEST_STEPS):
         # Small random walk in mid-price (for testing)
-        new_mid += 0.00001 * random.gauss(0.0, 1.0)
+        new_mid += ORDERBOOK_ADVANCED_TEST_DRIFT_SCALE * random.gauss(0.0, 1.0)
         ob.evolve_one_step(
             new_mid=new_mid,
             dt=dt,
-            mo_buy_prob=0.5,
+            mo_buy_prob=ORDERBOOK_DEFAULT_MO_BUY_PROB,
         )
-        if (step + 1) % 25 == 0:
+        if (step + 1) % ORDERBOOK_ADVANCED_TEST_SNAPSHOT_INTERVAL == 0:
             print(f"=== Snapshot after {step + 1} steps ===")
-            ob.print_book(depth=10)
+            ob.print_book(depth=ORDERBOOK_ADVANCED_TEST_BOOK_DEPTH)
 
 
 

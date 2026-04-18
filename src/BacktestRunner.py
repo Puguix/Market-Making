@@ -22,18 +22,27 @@ from config import (
     TABLE_SCALE_Y, BACKTEST_REPORT_PATH, LAMBDA_A0_B, ALPHA_B, THETA_B,
     LAMBDA_MO_B, V_UNIT_B, LAMBDA_A0_C, ALPHA_C, THETA_C, LAMBDA_MO_C, V_UNIT_C,
     SIMULATOR_HEDGE_LOOKBACK_B, SIMULATOR_HEDGE_LOOKBACK_C,
-    SIMULATOR_BUFFER_B_SIZE, SIMULATOR_BUFFER_C_SIZE
+    SIMULATOR_BUFFER_B_SIZE, SIMULATOR_BUFFER_C_SIZE,
+    SIMULATOR_DEFAULT_PHASE,
 )
 
 # Mandatory comment as per instructions:
 # This implementation follows a heuristic-first market making approach under latency constraints.
 
 class BacktestRunner:
-    def __init__(self, steps: int = BACKTEST_DEFAULT_STEPS, dt: float = BACKTEST_DEFAULT_DT):
+    def __init__(
+        self,
+        steps: int = BACKTEST_DEFAULT_STEPS,
+        dt: float = BACKTEST_DEFAULT_DT,
+        phase: int = SIMULATOR_DEFAULT_PHASE,
+    ):
+        if phase not in (1, 2, 3):
+            raise ValueError(f"phase must be 1, 2, or 3, got {phase!r}")
         self.steps = steps
         self.dt = dt
         self.mid_start = BACKTEST_MID_START
-        
+        self.phase = int(phase)
+
         # Chemins des fichiers
         self.paths = ["metrics_realtime.parquet", "metrics_aggregated.parquet"]
         self._cleanup()
@@ -46,7 +55,7 @@ class BacktestRunner:
                 print(f">>> Nettoyage : {os.path.basename(p)} supprimé.")
 
     def run_simulation(self):
-        print(f">>> Démarrage de la simulation ({self.steps} steps)...")
+        print(f">>> Démarrage de la simulation ({self.steps} steps, phase={self.phase})...")
         
         # 1. Setup des OrderBooks
         ob_A = OrderBook(lambda_a0=LAMBDA_A0_A, alpha=ALPHA_A, theta=THETA_A, lambda_mo=LAMBDA_MO_A, v_unit=V_UNIT_A)
@@ -72,7 +81,8 @@ class BacktestRunner:
             order_book_C=ob_C,
             market_maker=mm,
             price_simulator=price_simulator,
-            hft=HFT()
+            hft=HFT(),
+            phase=self.phase,
         )
 
         # 4. Set up de 200ms de data sur B et C
@@ -181,7 +191,10 @@ class BacktestRunner:
         delta_grid: float,
         geo_increment: float,
         qty_alpha: float,
+        phase: int = SIMULATOR_DEFAULT_PHASE,
     ) -> "MarketSimulator":
+        if phase not in (1, 2, 3):
+            raise ValueError(f"phase must be 1, 2, or 3, got {phase!r}")
 
         self._cleanup()
 
@@ -214,7 +227,8 @@ class BacktestRunner:
             order_book_C=ob_C,
             market_maker=mm,
             price_simulator=EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt, seed=42),
-            hft=HFT()
+            hft=HFT(),
+            phase=phase,
         )
 
         sim.simulate_multiple_steps(steps=self.steps, generate_200ms_history=True)
@@ -223,6 +237,6 @@ class BacktestRunner:
     
 
 if __name__ == "__main__":
-    runner = BacktestRunner(steps=5_000)
+    runner = BacktestRunner(steps=5_000, phase=3)
     simulator = runner.run_simulation()
     runner.analyze_and_plot(simulator)

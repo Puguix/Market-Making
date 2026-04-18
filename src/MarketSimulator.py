@@ -14,10 +14,14 @@ from config import (
     SIMULATOR_HEDGE_LOOKBACK_B, SIMULATOR_HEDGE_LOOKBACK_C, 
     SIMULATOR_TOP_TRADES_COUNT,
     SIMULATOR_RANDOM_BUY_PROB, SIMULATOR_ORGANIC_LAMBDA_SCALE,
+    SIMULATOR_DEFAULT_PHASE,
+    SIMULATOR_PHASE1_ORGANIC_LAMBDA_MULTIPLIER,
     LAMBDA_A0_A, ALPHA_A, THETA_A, LAMBDA_MO_A, V_UNIT_A,
     LAMBDA_A0_B, ALPHA_B, THETA_B, LAMBDA_MO_B, V_UNIT_B,
     BACKTEST_MM_GAMMA, BACKTEST_MM_SIGMA, BACKTEST_MM_KAPPA,
-    PRICE_SIM_DEFAULT_DT_SECONDS
+    PRICE_SIM_DEFAULT_DT_SECONDS,
+    HFT_PROB_OFF,
+    HFT_PROB_ONE_SIDED,
 )
 
 _REPORT_DATA_SCHEMA = {
@@ -38,17 +42,33 @@ class MarketSimulator:
     """
     A market simulator for a single asset, with three different markets (A, B, and C),
     and a unique market maker on exchange A.
+
+    ``phase`` controls which HFT layers run each step (see ``SIMULATOR_DEFAULT_PHASE`` in config).
     """
 
-    def __init__(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook, market_maker: MarketMaker, price_simulator: EURUSDPriceSimulator, hft: HFT):
+    def __init__(
+        self,
+        order_book_A: OrderBook,
+        order_book_B: OrderBook,
+        order_book_C: OrderBook,
+        market_maker: MarketMaker,
+        price_simulator: EURUSDPriceSimulator,
+        hft: HFT,
+        phase: int = SIMULATOR_DEFAULT_PHASE,
+    ):
         """
         order_book_A: The order book for exchange A
         order_book_B: The order book for exchange B
         order_book_C: The order book for exchange C
         market_maker: The market maker for exchange A
         price_simulator: The price simulator for the base currency
+        phase: Simulation regime — 1 = MM + organic only; 2 = + HFT snipe; 3 = + HFT make_market_on_A
+            (tight touch quotes from delayed B/C, ``HFT_PROB_OFF`` / ``HFT_PROB_ONE_SIDED``).
         """
-        
+        if phase not in (1, 2, 3):
+            raise ValueError(f"phase must be 1, 2, or 3, got {phase!r}")
+
+        self.phase = int(phase)
         self.order_book_A = order_book_A
         self.order_books_B = [order_book_B] + [None] * (SIMULATOR_BUFFER_B_SIZE - 1) # 200ms
         self.order_books_C = [order_book_C] + [None] * (SIMULATOR_BUFFER_C_SIZE - 1) # 170ms
@@ -63,6 +83,12 @@ class MarketSimulator:
         self._top_trades_heap: list[tuple[float, int, dict]] = []
         self._top_trade_seq = 0
         self._single_step_count = 0
+
+    def _organic_lambda_scale(self) -> float:
+        """Scale A organic MO intensity vs ``order_book_A.lambda_mo`` (higher in phase 1 without HFT)."""
+        if self.phase <= 1:
+            return SIMULATOR_ORGANIC_LAMBDA_SCALE * SIMULATOR_PHASE1_ORGANIC_LAMBDA_MULTIPLIER
+        return SIMULATOR_ORGANIC_LAMBDA_SCALE
 
     def _first_step_format_level(self, price, qty: float) -> str:
         if price is None:
@@ -219,6 +245,8 @@ class MarketSimulator:
         is_first = self._single_step_count == 0
         if is_first:
             print("======== [first step] simulate_single_step — detailed log ========")
+            print(f"  [first step] simulator phase={self.phase} "
+                  f"(1=MM+organic, 2=+HFT snipe, 3=+HFT make_market_on_A)")
 
         def _lap_ms(label: str, t0: float) -> float:
             dt_ms = (perf_counter() - t0) * 1000.0
@@ -235,6 +263,12 @@ class MarketSimulator:
         if is_first:
             self._first_step_log_orderbooks("after order book evolution (B/C stepped)")
 
+        hft_fills_A: list = []
+        hft_snipe_count = 0
+        hft_snipe_qty = 0.0
+        orders_B: list = []
+        orders_C: list = []
+
         # HFT snipes orders on A given B and C 50ms ago
         orders_A, orders_B, orders_C = self.hft.snipe(
             self.order_book_A,
@@ -242,8 +276,6 @@ class MarketSimulator:
             self.order_books_C[(self.current_idx_C - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_C_SIZE]
         )
 
-        # HFT fills on A
-        hft_fills_A = []
         for order_A in orders_A:
             order_fills = self.order_book_A.add_limit_order(order_A)
             hft_fills_A.extend(order_fills)
@@ -253,7 +285,6 @@ class MarketSimulator:
         hft_snipe_count = len(orders_A)
         hft_snipe_qty = sum(o.quantity for o in orders_A)
 
-        # HFT orders on B and C execute immediately on current books (no delay)
         for order_B in orders_B:
             self.order_books_B[self.current_idx_B].add_limit_order(order_B)
         for order_C in orders_C:
@@ -261,16 +292,45 @@ class MarketSimulator:
 
         t0 = _lap_ms("HFT snipe + apply orders on A/B/C", t0)
         if is_first:
-            self._first_step_log_orderbooks("after HFT")
+            self._first_step_log_orderbooks("after HFT snipe" if self.phase >= 2 else "after HFT snipe (skipped)")
             print(
-                f"  [first step] HFT: {hft_snipe_count} snipe orders on A "
+                f"  [first step] HFT snipe: {hft_snipe_count} orders on A "
                 f"(total qty {hft_snipe_qty:.0f}), B/C child orders {len(orders_B)}/{len(orders_C)}"
+            )
+
+        hft_mm_fills: list = []
+        if self.phase >= 3:
+            # HFT make_market_on_A in phase 3 only
+            ob_b_lag = self.order_books_B[
+                (self.current_idx_B - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_B_SIZE
+            ]
+            ob_c_lag = self.order_books_C[
+                (self.current_idx_C - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_C_SIZE
+            ]
+            hft_mm_fills = self.hft.make_market_on_A(
+                self.order_book_A,
+                ob_b_lag,
+                ob_c_lag,
+                prob_off=HFT_PROB_OFF,
+                prob_one_sided=HFT_PROB_ONE_SIDED,
+            )
+            fills.extend(hft_mm_fills)
+            self.market_maker.update_inventory_from_fills(hft_mm_fills)
+
+        t0 = _lap_ms("HFT make_market_on_A (phase 3)", t0)
+        if is_first:
+            self._first_step_log_orderbooks(
+                "after HFT make_market_on_A" if self.phase >= 3 else "after HFT make_market_on_A (skipped)"
+            )
+            print(
+                f"  [first step] HFT make_market_on_A: fill events={len(hft_mm_fills)} "
+                f"(phase {self.phase})"
             )
 
         # Organic MOs on A : spot already shifted with _shift_prices
         n_mo = PoissonGenerator(ArrivalIntensity(
             spread=self.order_book_A.spread, alpha=ALPHA_A,
-            lambda_0=self.order_book_A.lambda_mo * SIMULATOR_ORGANIC_LAMBDA_SCALE
+            lambda_0=self.order_book_A.lambda_mo * self._organic_lambda_scale()
         )).generate()
 
         fills_A_organic = []
@@ -336,6 +396,10 @@ class MarketSimulator:
                 {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": "A"}
             )
         for o, qty in hft_fills_A:
+            self._register_trade(
+                {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": "A"}
+            )
+        for o, qty in hft_mm_fills:
             self._register_trade(
                 {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": "A"}
             )

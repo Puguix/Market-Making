@@ -3,6 +3,7 @@ from sortedcontainers import SortedDict
 import math
 import random
 from dataclasses import dataclass, field
+from typing import Optional
 
 from PoissonSimulation import ArrivalIntensity, PoissonGenerator
 
@@ -240,6 +241,16 @@ class OrderBook:
             if not side[order.price]:
                 del side[order.price]
         return True
+
+    def resting_quantity(self, order_id: str) -> float:
+        """Remaining visible quantity for a resting limit order id, or 0 if absent."""
+        o = self._orders.get(order_id)
+        return float(o.quantity) if o else 0.0
+
+    def resting_price(self, order_id: str) -> Optional[float]:
+        """Limit price for a resting order id, or None if not in the book."""
+        o = self._orders.get(order_id)
+        return float(o.price) if o else None
 
     @property
     def best_bid(self):

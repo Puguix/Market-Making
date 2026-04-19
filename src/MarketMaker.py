@@ -607,9 +607,14 @@ class MarketMaker:
         if self._metrics_rt_rows:
             pl.DataFrame(self._metrics_rt_rows, schema=_METRICS_RT_SCHEMA).write_parquet(PARQUET_PATH_REALTIME)
             self._metrics_rt_rows.clear()
+        else:
+            pl.DataFrame([], schema=_METRICS_RT_SCHEMA).write_parquet(PARQUET_PATH_REALTIME)
+
         if self._metrics_agg_rows:
             pl.DataFrame(self._metrics_agg_rows, schema=_METRICS_AGG_SCHEMA).write_parquet(PARQUET_PATH_AGGREGATED)
             self._metrics_agg_rows.clear()
+        else:
+            pl.DataFrame([], schema=_METRICS_AGG_SCHEMA).write_parquet(PARQUET_PATH_AGGREGATED)
 
     def save_metrics(
         self,

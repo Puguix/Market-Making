@@ -87,6 +87,7 @@ class BacktestRunner:
             price_simulator=price_simulator,
             hft=HFT(),
             phase=self.phase,
+            verbose=False,
         )
 
         # 4. Set up de 200ms de data sur B et C
@@ -234,6 +235,7 @@ class BacktestRunner:
             price_simulator=price_sim,
             hft=HFT(),
             phase=phase,
+            verbose=False,
         )
 
         sim.simulate_200ms_history()

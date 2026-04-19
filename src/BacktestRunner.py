@@ -5,7 +5,7 @@ import seaborn as sns
 import numpy as np
 
 # Import de tes classes existantes
-from OrderBook import OrderBook
+from OrderBook import OrderBook, Order
 from MarketMaker import MarketMaker, PARQUET_PATH_AGGREGATED, PARQUET_PATH_REALTIME
 from EURUSDPriceSimulator import EURUSDPriceSimulator
 from MarketSimulator import MarketSimulator
@@ -203,8 +203,8 @@ class BacktestRunner:
         def build_organic_book(mid):
             ob = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
             for i in range(1, 11):
-                ob.add_limit_order(Order(f"B{i}", "bid", mid - i*0.0001, 500_000))
-                ob.add_limit_order(Order(f"A{i}", "ask", mid + i*0.0001, 500_000))
+                ob.add_limit_order(Order(f"B{i}", False, mid - i*0.0001, 500_000))
+                ob.add_limit_order(Order(f"A{i}", True, mid + i*0.0001, 500_000))
             return ob
 
         ob_B = build_organic_book(self.mid_start)
@@ -221,17 +221,23 @@ class BacktestRunner:
         )
         mm.hedge_threshold = hedge_threshold
 
+        price_sim = EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt, seed=42)
+        price_sim.generate_prices(SIMULATOR_BUFFER_B_SIZE + self.steps)  # génère d'abord
+
         sim = MarketSimulator(
             order_book_A=ob_A,
             order_book_B=ob_B,
             order_book_C=ob_C,
             market_maker=mm,
-            price_simulator=EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt, seed=42),
+            price_simulator=price_sim,
             hft=HFT(),
             phase=phase,
         )
 
-        sim.simulate_multiple_steps(steps=self.steps, generate_200ms_history=True)
+        #sim.simulate_multiple_steps(steps=self.steps, generate_200ms_history=True)
+        sim.simulate_200ms_history()
+        sim.simulate_n_steps(n_steps=self.steps)
+
         sim.market_maker._flush_to_parquet()
         return sim
     

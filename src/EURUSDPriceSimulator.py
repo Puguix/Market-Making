@@ -181,20 +181,17 @@ class EURUSDPriceSimulator:
         using UTC hour of day.
         """
         h = hour_of_day % HOURS_PER_DAY
-        # Use pattern matching for efficiency and clarity (Python 3.10+)
-        match h:
-            case _ if 0.0 <= h < 8.0:
-                return TOKYO_ACTIVITY      # Tokyo
-            case _ if 8.0 <= h < 9.0:
-                return LONDON_OPEN_ACTIVITY      # London open
-            case _ if 9.0 <= h < 13.0:
-                return LONDON_MID_ACTIVITY      # London mid
-            case _ if 13.0 <= h < 16.0:
-                return OVERLAP_ACTIVITY      # London–NY overlap
-            case _ if 16.0 <= h < 18.0:
-                return POST_LONDON_ACTIVITY      # Post-London
-            case _:
-                return OVERNIGHT_ACTIVITY      # Overnight
+        if 0.0 <= h < 8.0:
+            return TOKYO_ACTIVITY  # Tokyo
+        if 8.0 <= h < 9.0:
+            return LONDON_OPEN_ACTIVITY  # London open
+        if 9.0 <= h < 13.0:
+            return LONDON_MID_ACTIVITY  # London mid
+        if 13.0 <= h < 16.0:
+            return OVERLAP_ACTIVITY  # London–NY overlap
+        if 16.0 <= h < 18.0:
+            return POST_LONDON_ACTIVITY  # Post-London
+        return OVERNIGHT_ACTIVITY  # Overnight
 
     def generate_prices_for_simulation_day(self) -> None:
         """

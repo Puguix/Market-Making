@@ -315,6 +315,9 @@ class MarketMaker:
         # Accumulators
         self._realized_pnl = 0.0
         self._hedge_cost = 0.0
+        self._last_mid_ref = s0          
+        self._qty_posted_bid = 0.0      
+        self._qty_posted_ask = 0.0       
 
         # Orders
         self._active_orders: dict[str, list[tuple[str, float]]] = {}  # "bid_1.0850" -> [("MM_42", 300_000), ("MM_87", 150_000)]
@@ -348,6 +351,9 @@ class MarketMaker:
         else:
             self.EUR_quantity += filled_qty
             self.USD_quantity -= sum(o.price * qty * (1.0 + taker_fee) for o, qty in fills)
+
+        raw_cash = sum(o.price * qty for o, qty in fills)
+        self._hedge_cost += raw_cash * taker_fee
 
     # === protected methods ===
     
@@ -568,6 +574,12 @@ class MarketMaker:
             fills.extend(xf)
             lvl_key = f"{'ask' if order.is_ask else 'bid'}_{round(order.price, 4)}"
             self._active_orders[lvl_key] = [(order.order_id, order.quantity)]
+
+            if order.is_ask:
+                self._qty_posted_ask += order.quantity
+            else:
+                self._qty_posted_bid += order.quantity
+
         return fills
 
     # ===== Update inventory =====
@@ -580,9 +592,11 @@ class MarketMaker:
             if order.is_ask:
                 self.EUR_quantity -= qty
                 self.USD_quantity += qty * order.price
+                self._realized_pnl += (order.price - self._last_mid_ref) * qty
             else:
                 self.EUR_quantity += qty
                 self.USD_quantity -= qty * order.price
+                self._realized_pnl += (self._last_mid_ref - order.price) * qty
 
             # Mise à jour tracking FIFO
             side_prefix = "ask" if order.is_ask else "bid"
@@ -609,9 +623,14 @@ class MarketMaker:
         if self._metrics_rt_rows:
             pl.DataFrame(self._metrics_rt_rows, schema=_METRICS_RT_SCHEMA).write_parquet(PARQUET_PATH_REALTIME)
             self._metrics_rt_rows.clear()
+        else:
+            pl.DataFrame([], schema=_METRICS_RT_SCHEMA).write_parquet(PARQUET_PATH_REALTIME)
+
         if self._metrics_agg_rows:
             pl.DataFrame(self._metrics_agg_rows, schema=_METRICS_AGG_SCHEMA).write_parquet(PARQUET_PATH_AGGREGATED)
             self._metrics_agg_rows.clear()
+        else:
+            pl.DataFrame([], schema=_METRICS_AGG_SCHEMA).write_parquet(PARQUET_PATH_AGGREGATED)
 
     def save_metrics(
         self,
@@ -637,6 +656,7 @@ class MarketMaker:
             mid_ref = self.s0
         
         mid_ref = float(mid_ref)
+        self._last_mid_ref = mid_ref
 
         # 2. RÉCUPÉRATION DU MID LOCAL DE A (Pour le display)
         m_A = getattr(order_book_A, 'mid', None)
@@ -675,7 +695,7 @@ class MarketMaker:
         # 6. ENREGISTREMENT AGGREGATED (Tous les 100 steps)
         if self._step_count % MARKET_MAKER_AGGREGATION_STEPS == 0:
             # On recrée le problème d'utilité pour avoir reservation_price et optimal_spread
-            utility = self._build_utility_problem(mid_B=mid_ref, mid_C=mid_ref) # On simplifie ici
+            utility = self._build_utility_problem(mid_B=mid_ref, mid_C=mid_ref)
 
             # --- SÉCURISATION DES DONNÉES DU CARNET A ---
             s_quoted = getattr(order_book_A, 'spread', None)
@@ -692,6 +712,19 @@ class MarketMaker:
             total_qty = sum(f[1] for f in mm_fills)
             spread_cap = sum(abs(f[0].price - mid_ref) * f[1] for f in mm_fills) / total_qty if total_qty > 0 else 0.0
 
+            # fill_rate : qty fillée / qty postée sur la fenêtre agrégée
+            fill_rate_bid = (
+                sum(f[1] for f in mm_fills if not f[0].is_ask) / self._qty_posted_bid
+                if self._qty_posted_bid > 0 else 0.0
+            )
+            fill_rate_ask = (
+                sum(f[1] for f in mm_fills if f[0].is_ask) / self._qty_posted_ask
+                if self._qty_posted_ask > 0 else 0.0
+            )
+            # Reset pour la prochaine fenêtre
+            self._qty_posted_bid = 0.0
+            self._qty_posted_ask = 0.0
+
             row_agg = {
                 "timestamp": float(timestamp),
                 "mid_A": float(mid_A_display),
@@ -700,9 +733,9 @@ class MarketMaker:
                 "mid_C": float(m_C),
                 "reservation_price": float(utility.reservation_price),
                 "optimal_spread": float(utility.optimal_spread),
-                "spread_quoted": s_quoted, # Utilise la version sécurisée
-                "best_bid_A": b_price,     # Utilise la version sécurisée
-                "best_ask_A": a_price,     # Utilise la version sécurisée
+                "spread_quoted": s_quoted,
+                "best_bid_A": b_price,
+                "best_ask_A": a_price,
                 "EUR_quantity": float(self.EUR_quantity),
                 "USD_quantity": float(self.USD_quantity),
                 "inventory_pct": float(inv_pct),
@@ -710,10 +743,10 @@ class MarketMaker:
                 "mtm_pnl": float(mtm_pnl),
                 "realized_pnl": float(self._realized_pnl),
                 "hedge_cost": float(self._hedge_cost),
-                "fill_rate_bid": float(sum(f[1] for f in mm_fills if not f[0].is_ask) / utility.inventory_max),
-                "fill_rate_ask": float(sum(f[1] for f in mm_fills if f[0].is_ask) / utility.inventory_max),
+                "fill_rate_bid": float(fill_rate_bid),     
+                "fill_rate_ask": float(fill_rate_ask),     
                 "spread_capture": float(spread_cap),
-                "adverse_selection": float(spread_cap),
+                "adverse_selection": 0.0,                 
                 "hft_snipe_count": int(hft_snipe_count),
                 "hft_snipe_qty": float(hft_snipe_qty),
                 "arb_opportunity_count": int(hft_snipe_count),

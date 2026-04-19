@@ -3,7 +3,7 @@ import optuna
 from optuna.trial import FrozenTrial
 from BacktestRunner import BacktestRunner
 from MarketMaker import MarketMaker, GeometricPriceGridStrategy, GeometricQuantityGridStrategy
-from config import PARQUET_PATH_REALTIME, PARQUET_PATH_AGGREGATED, MAX_SPREAD_PIPS, MIN_QTY_QUOTED, HEDGE_THRESHOLD
+from config import PARQUET_PATH_REALTIME, PARQUET_PATH_AGGREGATED, MAX_SPREAD_PIPS, MIN_QTY_QUOTED, HEDGE_THRESHOLD, DEFAULT_GEO_QTY_ALPHA, DEFAULT_GEO_INCREMENT, DEFAULT_TICK_SIZE
 import polars as pl
 import numpy as np
 
@@ -47,9 +47,9 @@ def objective(trial: optuna.Trial) -> float:
     # --- PARMAS GRIS ---
     gamma         = trial.suggest_float("gamma", 0.001, 0.5, log=True)
     kappa         = trial.suggest_float("kappa", 10.0, 5000.0, log=True)
-    delta_grid    = trial.suggest_float("delta_grid", 0.00005, 0.0005)
-    geo_increment = trial.suggest_float("geo_increment", 1.1, 2.5)
-    qty_alpha     = trial.suggest_float("qty_alpha", 0.4, 0.9)
+    # delta_grid    = trial.suggest_float("delta_grid", 0.00005, 0.0005)
+    # geo_increment = trial.suggest_float("geo_increment", 1.1, 2.5)
+    # qty_alpha     = trial.suggest_float("qty_alpha", 0.4, 0.9)
     # --------------------
 
     # Run Simulation
@@ -63,9 +63,12 @@ def objective(trial: optuna.Trial) -> float:
             gamma=gamma,
             kappa=kappa,
             hedge_threshold=HEDGE_THRESHOLD,
-            delta_grid=delta_grid,
-            geo_increment=geo_increment,
-            qty_alpha=qty_alpha,
+            delta_grid=DEFAULT_TICK_SIZE,
+            geo_increment=DEFAULT_GEO_INCREMENT,
+            qty_alpha=DEFAULT_GEO_QTY_ALPHA,
+            # delta_grid=delta_grid,
+            # geo_increment=geo_increment,
+            # qty_alpha=qty_alpha,
         )
     except Exception as e:
         # Fail to converge
@@ -133,7 +136,7 @@ if __name__ == "__main__":
 
     study.optimize(
         objective,
-        n_trials=100,
+        n_trials=50,
         n_jobs=4,           # 4 simulations en parallèle
         callbacks=[logging_callback],
         gc_after_trial=True,
@@ -153,14 +156,17 @@ if __name__ == "__main__":
 
     # Backtest with optmial params
     best_params = study.best_params
-    runner = BacktestRunner(steps=1500)
+    runner = BacktestRunner(steps=10_000)
     sim = runner.run_simulation_with_params(
         gamma=best_params["gamma"],
         kappa=best_params["kappa"],
         hedge_threshold=HEDGE_THRESHOLD,
-        delta_grid=best_params["delta_grid"],
-        geo_increment=best_params["geo_increment"],
-        qty_alpha=best_params["qty_alpha"],
+        # delta_grid=best_params["delta_grid"],
+        # geo_increment=best_params["geo_increment"],
+        # qty_alpha=best_params["qty_alpha"],
+        delta_grid=DEFAULT_TICK_SIZE,
+        geo_increment=DEFAULT_GEO_INCREMENT,
+        qty_alpha=DEFAULT_GEO_QTY_ALPHA,
     )
 
     runner.analyze_and_plot(sim)

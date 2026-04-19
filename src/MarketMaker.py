@@ -20,6 +20,7 @@ from config import (
     MARKET_MAKER_HEDGE_THRESHOLD, MARKET_MAKER_EPSILON,
     MARKET_MAKER_AGGREGATION_STEPS, INVENTORY_REGIME_NORMAL_THRESHOLD,
     INVENTORY_REGIME_ALERT_THRESHOLD,
+    MARKET_MAKER_DEFAULT_QUOTE_PHASE,
     MARKET_MAKER_PHASE3_HEDGE_LEG_TRIGGER,
     MM_PHASE3_LATENCY_SAFETY_BUFFER_PIPS,
     MM_PHASE3_DEEPEN_BASE_TICKS,
@@ -265,6 +266,9 @@ class MarketMaker:
     """
     The market maker for exchange A.
     Keep trak of inventory and PnL.
+
+    ``quote_phase``: 1 = classic A–S geometric grid at reservation; 3 = Phase-3 planner
+    (depth behind HFT, latency spread add-on, inventory skew / fallback). See ``make_market``.
     """
 
     WEIGHT_B = MARKET_MAKER_WEIGHT_B
@@ -280,8 +284,12 @@ class MarketMaker:
                  sigma: float,
                  kappa: float,
                  T: float,
-                 s0: float
+                 s0: float,
+                 quote_phase: int = MARKET_MAKER_DEFAULT_QUOTE_PHASE,
                  ):
+        if quote_phase not in (1, 3):
+            raise ValueError(f"quote_phase must be 1 or 3, got {quote_phase!r}")
+        self.quote_phase = int(quote_phase)
         self.s0 = s0
         self.EUR_quantity = EUR_quantity
         self.USD_quantity = USD_quantity
@@ -292,9 +300,12 @@ class MarketMaker:
         self.kappa = kappa
         self.T = T
         self.hedge_threshold = MARKET_MAKER_HEDGE_THRESHOLD  # legacy cap (metrics / regimes)
-        self.hedge_leg_trigger = min(
-            MARKET_MAKER_HEDGE_THRESHOLD, MARKET_MAKER_PHASE3_HEDGE_LEG_TRIGGER
-        )
+        if self.quote_phase == 1:
+            self.hedge_leg_trigger = MARKET_MAKER_HEDGE_THRESHOLD
+        else:
+            self.hedge_leg_trigger = min(
+                MARKET_MAKER_HEDGE_THRESHOLD, MARKET_MAKER_PHASE3_HEDGE_LEG_TRIGGER
+            )
         self._step_count = 0
         self.id_cpt = 0
         self._initial_capital = self.EUR_quantity_t0 * self.s0 + self.USD_quantity_t0
@@ -397,6 +408,63 @@ class MarketMaker:
             return 0.0
         return max(0.0, min(1.0, (leg_share - lo) / max(hi - lo, 1e-12)))
 
+    def _emit_quote_plan_from_utility(
+        self, utility_problem: UtilityProblem
+    ) -> tuple[list[str], list[Order]]:
+        """Turn a solved ``UtilityProblem`` into cancel ids + new MM limit orders."""
+        bids_prices, ask_prices = utility_problem.get_price_grid()
+        bids_qty, ask_qty = utility_problem.get_qty_grid()
+
+        new_prices_bid = {f"bid_{p}": (p, bids_qty[i]) for i, p in enumerate(bids_prices)}
+        new_prices_ask = {f"ask_{p}": (p, ask_qty[i]) for i, p in enumerate(ask_prices)}
+        new_prices = {**new_prices_bid, **new_prices_ask}
+
+        cancel_ids: list[str] = []
+        for key in self._active_orders:
+            if key not in new_prices:
+                for oid, _ in self._active_orders[key]:
+                    cancel_ids.append(oid)
+        for key in new_prices:
+            if key in self._active_orders:
+                for oid, _ in self._active_orders[key]:
+                    cancel_ids.append(oid)
+
+        orders_to_submit: list[Order] = []
+        for key, (price, qty_target) in new_prices.items():
+            if qty_target <= 0:
+                continue
+            is_ask = key.startswith("ask")
+            orders_to_submit.append(
+                Order(
+                    order_id=f"MM_{self.id_cpt}",
+                    is_ask=is_ask,
+                    price=price,
+                    quantity=qty_target,
+                )
+            )
+            self.id_cpt += 1
+
+        return cancel_ids, orders_to_submit
+
+    def plan_phase1_quote_actions(
+        self,
+        order_book_A: OrderBook,
+        order_book_B: OrderBook,
+        order_book_C: OrderBook,
+    ) -> tuple[list[str], list[Order]]:
+        """
+        Classic quoting: Avellaneda–Stoikov reservation and spread only (no Phase-3 depth,
+        latency buffer, HFT-size skew, or fallback tightening).
+        """
+        if order_book_B.mid is None or order_book_C.mid is None:
+            return self._flatten_mm_order_ids(), []
+
+        utility_problem = self._build_utility_problem(
+            order_book_B.mid,
+            order_book_C.mid,
+        )
+        return self._emit_quote_plan_from_utility(utility_problem)
+
     def plan_phase3_quote_actions(
         self,
         order_book_A: OrderBook,
@@ -479,39 +547,7 @@ class MarketMaker:
             inventory_skew_multiplier=inv_skew_mult,
         )
 
-        bids_prices, ask_prices = utility_problem.get_price_grid()
-        bids_qty, ask_qty = utility_problem.get_qty_grid()
-
-        new_prices_bid = {f"bid_{p}": (p, bids_qty[i]) for i, p in enumerate(bids_prices)}
-        new_prices_ask = {f"ask_{p}": (p, ask_qty[i]) for i, p in enumerate(ask_prices)}
-        new_prices = {**new_prices_bid, **new_prices_ask}
-
-        cancel_ids: list[str] = []
-        for key in self._active_orders:
-            if key not in new_prices:
-                for oid, _ in self._active_orders[key]:
-                    cancel_ids.append(oid)
-        for key in new_prices:
-            if key in self._active_orders:
-                for oid, _ in self._active_orders[key]:
-                    cancel_ids.append(oid)
-
-        orders_to_submit: list[Order] = []
-        for key, (price, qty_target) in new_prices.items():
-            if qty_target <= 0:
-                continue
-            is_ask = key.startswith("ask")
-            orders_to_submit.append(
-                Order(
-                    order_id=f"MM_{self.id_cpt}",
-                    is_ask=is_ask,
-                    price=price,
-                    quantity=qty_target,
-                )
-            )
-            self.id_cpt += 1
-
-        return cancel_ids, orders_to_submit
+        return self._emit_quote_plan_from_utility(utility_problem)
 
     def apply_quote_plan(
         self,
@@ -717,7 +753,21 @@ class MarketMaker:
     def get_USD_quantity(self) -> float:
         return self.USD_quantity
 
-    def make_market(self, order_book_A: OrderBook, order_book_B: OrderBook, order_book_C: OrderBook) -> None:
+    def make_market(
+        self,
+        order_book_A: OrderBook,
+        order_book_B: OrderBook,
+        order_book_C: OrderBook,
+        *,
+        quote_phase: Optional[int] = None,
+    ) -> None:
+        """
+        Post or refresh MM quotes on A. Uses ``self.quote_phase`` (1 or 3) unless ``quote_phase``
+        is passed for a one-off override.
+        """
+        qphase = self.quote_phase if quote_phase is None else int(quote_phase)
+        if qphase not in (1, 3):
+            raise ValueError(f"quote_phase must be 1 or 3, got {qphase!r}")
 
         # Skip market making if reference prices are unavailable
         if order_book_B.mid is None or order_book_C.mid is None:
@@ -738,9 +788,14 @@ class MarketMaker:
             if delta < self.epsilon and not self._has_new_fills:
                 return
 
-        cancel_ids, orders_to_submit = self.plan_phase3_quote_actions(
-            order_book_A, order_book_B, order_book_C
-        )
+        if qphase == 1:
+            cancel_ids, orders_to_submit = self.plan_phase1_quote_actions(
+                order_book_A, order_book_B, order_book_C
+            )
+        else:
+            cancel_ids, orders_to_submit = self.plan_phase3_quote_actions(
+                order_book_A, order_book_B, order_book_C
+            )
         self.apply_quote_plan(order_book_A, cancel_ids, orders_to_submit)
 
         self._last_posted_mid = new_mid

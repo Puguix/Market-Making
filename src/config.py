@@ -26,6 +26,8 @@ MARKET_MAKER_EPSILON = 0.00005
 MARKET_MAKER_AGGREGATION_STEPS = 100
 INVENTORY_REGIME_NORMAL_THRESHOLD = 0.75
 INVENTORY_REGIME_ALERT_THRESHOLD = 0.90
+# MM quoting: 1 = classic A–S grid at reservation (no depth/buffer skew). 3 = plan_phase3 (HFT-aware).
+MARKET_MAKER_DEFAULT_QUOTE_PHASE = 3
 
 # Phase 3 — fallback MM on A (behind HFT, latency buffer, stress / wide-spread reaction)
 MARKET_MAKER_PHASE3_HEDGE_LEG_TRIGGER = 0.88

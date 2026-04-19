@@ -1,11 +1,13 @@
 import os
+from typing import Optional
+
 import polars as pl
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
 # Import de tes classes existantes
-from OrderBook import OrderBook
+from OrderBook import OrderBook, Order
 from MarketMaker import MarketMaker, PARQUET_PATH_AGGREGATED, PARQUET_PATH_REALTIME
 from EURUSDPriceSimulator import EURUSDPriceSimulator
 from MarketSimulator import MarketSimulator
@@ -63,6 +65,7 @@ class BacktestRunner:
         ob_C = OrderBook(lambda_a0=LAMBDA_A0_C, alpha=ALPHA_C, theta=THETA_C, lambda_mo=LAMBDA_MO_C, v_unit=V_UNIT_C).build_organic_book(self.mid_start)
 
         # 2. Setup du Market Maker (Phase 1 Heuristique)
+        mm_quote_phase = 3 if self.phase == 3 else 1
         mm = MarketMaker(
             EUR_quantity=BACKTEST_MM_EUR_QUANTITY,
             USD_quantity=BACKTEST_MM_USD_QUANTITY,
@@ -70,7 +73,8 @@ class BacktestRunner:
             sigma=BACKTEST_MM_SIGMA,
             kappa=BACKTEST_MM_KAPPA,
             T=self.steps * self.dt / 86_400 / 365,
-            s0=self.mid_start
+            s0=self.mid_start,
+            quote_phase=mm_quote_phase,
         )
 
         # 3. Setup du Simulateur
@@ -192,9 +196,14 @@ class BacktestRunner:
         geo_increment: float,
         qty_alpha: float,
         phase: int = SIMULATOR_DEFAULT_PHASE,
+        quote_phase: Optional[int] = None,
     ) -> "MarketSimulator":
         if phase not in (1, 2, 3):
             raise ValueError(f"phase must be 1, 2, or 3, got {phase!r}")
+        if quote_phase is None:
+            quote_phase = 1 if phase == 1 else 3
+        if quote_phase not in (1, 3):
+            raise ValueError(f"quote_phase must be 1 or 3, got {quote_phase!r}")
 
         self._cleanup()
 
@@ -218,6 +227,7 @@ class BacktestRunner:
             kappa=kappa,
             T=self.steps * self.dt,
             s0=self.mid_start,
+            quote_phase=quote_phase,
         )
         mm.hedge_threshold = hedge_threshold
 
@@ -237,6 +247,6 @@ class BacktestRunner:
     
 
 if __name__ == "__main__":
-    runner = BacktestRunner(steps=5_000, phase=3)
+    runner = BacktestRunner(steps=5_000, phase=1)
     simulator = runner.run_simulation()
     runner.analyze_and_plot(simulator)

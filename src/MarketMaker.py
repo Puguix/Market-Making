@@ -738,7 +738,7 @@ class MarketMaker:
             if delta < self.epsilon and not self._has_new_fills:
                 return
 
-        cancel_ids, orders_to_submit = self.plan_phase3_quote_actions(
+        cancel_ids, orders_to_submit = self.plan_phase3_quote_actions( ## always?
             order_book_A, order_book_B, order_book_C
         )
         self.apply_quote_plan(order_book_A, cancel_ids, orders_to_submit)

@@ -334,7 +334,13 @@ class OrderBook:
                 self._insert(Order(self._new_order_id("sim_LO_ask"), True, ask_price, self.v_unit), self.asks)
 
         # 5. Market order arrivals
-        n_mo = PoissonGenerator(ArrivalIntensity(spread=self.spread, alpha=self.alpha, lambda_0=self.lambda_mo * dt)).generate()
+        current_spread = self.spread
+        if current_spread is None:
+            print(f"[OrderBook] WARNING: spread is None (book one-sided or empty), falling back to 1 tick. "
+                f"best_bid={self.best_bid[0]}, best_ask={self.best_ask[0]}")
+            current_spread = tick
+        n_mo = PoissonGenerator(ArrivalIntensity(spread=current_spread, alpha=self.alpha, lambda_0=self.lambda_mo * dt)).generate()
+
         mo_fills = []
         for _ in range(n_mo):
             mo_fills.extend(self.add_market_order(random.random() > mo_buy_prob, self.v_unit))

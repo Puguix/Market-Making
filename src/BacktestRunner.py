@@ -207,23 +207,15 @@ class BacktestRunner:
 
         self._cleanup()
 
-        ob_A = OrderBook(lambda_a0=50.0, alpha=0.05, theta=0.1, lambda_mo=20.0, v_unit=50000)
-
-        def build_organic_book(mid):
-            ob = OrderBook(lambda_a0=5.0, alpha=0.05, theta=0.1, lambda_mo=5.0, v_unit=100_000)
-            for i in range(1, 11):
-                ob.add_limit_order(Order(f"B{i}", False, mid - i*0.0001, 500_000))
-                ob.add_limit_order(Order(f"A{i}", True, mid + i*0.0001, 500_000))
-            return ob
-
-        ob_B = build_organic_book(self.mid_start)
-        ob_C = build_organic_book(self.mid_start)
+        ob_A = OrderBook(lambda_a0=LAMBDA_A0_A, alpha=ALPHA_A, theta=THETA_A, lambda_mo=LAMBDA_MO_A, v_unit=V_UNIT_A)
+        ob_B = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B).build_organic_book(self.mid_start)
+        ob_C = OrderBook(lambda_a0=LAMBDA_A0_C, alpha=ALPHA_C, theta=THETA_C, lambda_mo=LAMBDA_MO_C, v_unit=V_UNIT_C).build_organic_book(self.mid_start)
 
         mm = MarketMaker(
-            EUR_quantity=0.0,
-            USD_quantity=1_000_000.0,
+            EUR_quantity=BACKTEST_MM_EUR_QUANTITY,
+            USD_quantity=BACKTEST_MM_USD_QUANTITY,
             gamma=gamma,
-            sigma=0.0005,        # sera remplacé par l'estimation realized vol plus tard
+            sigma=BACKTEST_MM_SIGMA, # to estimate from simulated prices
             kappa=kappa,
             T=self.steps * self.dt,
             s0=self.mid_start,
@@ -244,8 +236,15 @@ class BacktestRunner:
             phase=phase,
         )
 
-        #sim.simulate_multiple_steps(steps=self.steps, generate_200ms_history=True)
         sim.simulate_200ms_history()
+
+        # Make Market on a to initialize it
+        mm.make_market(
+            sim.order_book_A,
+            sim.order_books_B[(sim.current_idx_B - SIMULATOR_HEDGE_LOOKBACK_B) % SIMULATOR_BUFFER_B_SIZE],
+            sim.order_books_C[(sim.current_idx_C - SIMULATOR_HEDGE_LOOKBACK_C) % SIMULATOR_BUFFER_C_SIZE],
+        )
+
         sim.simulate_n_steps(n_steps=self.steps)
 
         sim.market_maker._flush_to_parquet()

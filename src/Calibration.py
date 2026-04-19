@@ -1,3 +1,4 @@
+import os
 import optuna
 from optuna.trial import FrozenTrial
 from BacktestRunner import BacktestRunner
@@ -72,6 +73,11 @@ def objective(trial: optuna.Trial) -> float:
         trial.set_user_attr("constraints", [999.0, 999.0]) # high penalty
         return 999.0
 
+    # Check if parquet files exist before reading
+    if not os.path.exists(PARQUET_PATH_REALTIME) or not os.path.exists(PARQUET_PATH_AGGREGATED):
+        print(f"Trial {trial_id}: parquet files not found")
+        trial.set_user_attr("constraints", [999.0, 999.0])
+        return 999.0
     
     df_rt  = pl.read_parquet(PARQUET_PATH_REALTIME)
     df_agg = pl.read_parquet(PARQUET_PATH_AGGREGATED)
@@ -143,3 +149,18 @@ if __name__ == "__main__":
     print("\n=== Importance des paramètres ===")
     for param, score in importance.items():
         print(f"  {param:<20} {score:.4f}")
+
+
+    # Backtest with optmial params
+    best_params = study.best_params
+    runner = BacktestRunner(steps=1500)
+    sim = runner.run_simulation_with_params(
+        gamma=best_params["gamma"],
+        kappa=best_params["kappa"],
+        hedge_threshold=HEDGE_THRESHOLD,
+        delta_grid=best_params["delta_grid"],
+        geo_increment=best_params["geo_increment"],
+        qty_alpha=best_params["qty_alpha"],
+    )
+
+    runner.analyze_and_plot(sim)

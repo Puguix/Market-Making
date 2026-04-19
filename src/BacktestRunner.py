@@ -237,6 +237,14 @@ class BacktestRunner:
         )
 
         sim.simulate_200ms_history()
+
+        # Make Market on a to initialize it
+        mm.make_market(
+            sim.order_book_A,
+            sim.order_books_B[(sim.current_idx_B - SIMULATOR_HEDGE_LOOKBACK_B) % SIMULATOR_BUFFER_B_SIZE],
+            sim.order_books_C[(sim.current_idx_C - SIMULATOR_HEDGE_LOOKBACK_C) % SIMULATOR_BUFFER_C_SIZE],
+        )
+
         sim.simulate_n_steps(n_steps=self.steps)
 
         sim.market_maker._flush_to_parquet()

@@ -2,6 +2,8 @@ from collections import deque
 from sortedcontainers import SortedDict
 import math
 import random
+import numpy as np
+from time import perf_counter
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -231,6 +233,9 @@ class OrderBook:
         else:
             return self._match(dummy, self.asks, lambda ask_p: ask_p <= dummy.price)
 
+    def add_market_order(self, order: Order) -> list[tuple[Order, float]]:
+        return self._match(order, self.asks if order.is_ask else self.bids, lambda p: p >= order.price if order.is_ask else p <= order.price)
+
     def cancel(self, order_id: str) -> bool:
         order = self._orders.pop(order_id, None)
         if not order:
@@ -289,7 +294,17 @@ class OrderBook:
         mo_buy_prob: float = ORDERBOOK_DEFAULT_MO_BUY_PROB,
         n_levels: int = ORDERBOOK_DEFAULT_LEVELS,
         tick: float = ORDERBOOK_DEFAULT_TICK_SIZE,
+        _timing: Optional[dict] = None,
     ) -> tuple["OrderBook", list]:
+        _t = perf_counter()
+
+        def _lap(section: str) -> None:
+            nonlocal _t
+            if _timing is None:
+                return
+            now = perf_counter()
+            _timing[section] = (now - _t) * 1000.0
+            _t = now
 
         # 1. Shift all existing prices to follow the new mid
         current_mid = self.mid
@@ -297,6 +312,7 @@ class OrderBook:
             delta_mid = new_mid - current_mid
             if delta_mid:
                 self._shift_prices(delta_mid)
+        _lap("1_shift_prices")
 
         # 2. Prune levels too far from new_mid to keep book size bounded
         max_depth = n_levels * tick
@@ -310,6 +326,7 @@ class OrderBook:
                 for o in self.asks[price].queue:
                     self._orders.pop(o.order_id, None)
                 del self.asks[price]
+        _lap("2_prune_far_levels")
 
         # 3. Cancellations on existing levels
         p_cancel = 1.0 - math.exp(-self.theta * dt)
@@ -318,20 +335,34 @@ class OrderBook:
                 to_cancel = [o.order_id for o in list(level.queue) if random.random() < p_cancel]
                 for oid in to_cancel:
                     self.cancel(oid)
+        _lap("3_cancellations")
 
         # 4. LO arrivals on the fixed grid around new_mid
-        for k in range(1, n_levels + 1):
-            bid_price = round(new_mid - k * tick, 4)
-            ask_price = round(new_mid + k * tick, 4)
-            delta_pips = k
-
-            n_arr_bid = PoissonGenerator(ArrivalIntensity(spread=delta_pips, alpha=self.alpha, lambda_0=self.lambda_a0 * dt)).generate()
-            for _ in range(n_arr_bid):
-                self._insert(Order(self._new_order_id("sim_LO_bid"), False, bid_price, self.v_unit), self.bids)
-
-            n_arr_ask = PoissonGenerator(ArrivalIntensity(spread=delta_pips, alpha=self.alpha, lambda_0=self.lambda_a0 * dt)).generate()
-            for _ in range(n_arr_ask):
-                self._insert(Order(self._new_order_id("sim_LO_ask"), True, ask_price, self.v_unit), self.asks)
+        # Batched Poisson: same intensity as ArrivalIntensity(spread=k, ...) with lambda_0 = lambda_a0 * dt,
+        # i.e. mu_k = (lambda_a0 * dt) * exp(-alpha * k). Bid and ask are independent draws per level k.
+        lo_bid_inserts = 0
+        lo_ask_inserts = 0
+        if n_levels > 0:
+            mu_scale = self.lambda_a0 * dt
+            ks = np.arange(1, n_levels + 1, dtype=np.float64)
+            mus = mu_scale * np.exp(-self.alpha * ks)
+            n_bids = np.random.poisson(mus)
+            n_asks = np.random.poisson(mus)
+            for idx, k in enumerate(range(1, n_levels + 1)):
+                bid_price = round(new_mid - k * tick, 4)
+                ask_price = round(new_mid + k * tick, 4)
+                n_arr_bid = int(n_bids[idx])
+                n_arr_ask = int(n_asks[idx])
+                lo_bid_inserts += n_arr_bid
+                for _ in range(n_arr_bid):
+                    self._insert(Order(self._new_order_id("sim_LO_bid"), False, bid_price, self.v_unit), self.bids)
+                lo_ask_inserts += n_arr_ask
+                for _ in range(n_arr_ask):
+                    self._insert(Order(self._new_order_id("sim_LO_ask"), True, ask_price, self.v_unit), self.asks)
+        _lap("4_lo_grid_arrivals")
+        if _timing is not None:
+            _timing["count_lo_bid_inserts"] = lo_bid_inserts
+            _timing["count_lo_ask_inserts"] = lo_ask_inserts
 
         # 5. Market order arrivals
         current_spread = self.spread
@@ -340,10 +371,14 @@ class OrderBook:
                 f"best_bid={self.best_bid[0]}, best_ask={self.best_ask[0]}")
             current_spread = tick
         n_mo = PoissonGenerator(ArrivalIntensity(spread=current_spread, alpha=self.alpha, lambda_0=self.lambda_mo * dt)).generate()
+        _lap("5a_mo_poisson_draw")
 
         mo_fills = []
         for _ in range(n_mo):
             mo_fills.extend(self.add_market_order(random.random() > mo_buy_prob, self.v_unit))
+        _lap("5b_mo_execute_loop")
+        if _timing is not None:
+            _timing["count_mo"] = n_mo
 
         # 6. Empty or one-sided book: Poisson LOs can leave a side empty; mid is then undefined.
         #    Seed inner quotes around new_mid (same grid as step 4), respecting any existing top of book.
@@ -359,6 +394,7 @@ class OrderBook:
             if ask_px is None:
                 ta = inner_ask if bid_px is None else round(max(inner_ask, bid_px + tick), 4)
                 self._insert(Order(self._new_order_id("sim_LO_ask"), True, ta, self.v_unit), self.asks)
+        _lap("6_seed_inner_quotes")
 
         return self, mo_fills
 

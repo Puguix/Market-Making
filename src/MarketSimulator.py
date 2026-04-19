@@ -22,6 +22,7 @@ from config import (
     PRICE_SIM_DEFAULT_DT_SECONDS,
     HFT_PROB_OFF,
     HFT_PROB_ONE_SIDED,
+    ORDERBOOK_DEFAULT_LEVELS,
 )
 
 _REPORT_DATA_SCHEMA = {
@@ -83,6 +84,8 @@ class MarketSimulator:
         self._top_trades_heap: list[tuple[float, int, dict]] = []
         self._top_trade_seq = 0
         self._single_step_count = 0
+        # Counts `simulate_order_book_evolution` calls; first call logs a detailed timing breakdown.
+        self._order_book_evolution_calls = 0
 
     def _organic_lambda_scale(self) -> float:
         """Scale A organic MO intensity vs ``order_book_A.lambda_mo`` (higher in phase 1 without HFT)."""
@@ -215,13 +218,54 @@ class MarketSimulator:
 
         self._report_rows.append(new_row)
 
-    def simulate_order_book_evolution(self):
-        mid, mid_B, mid_C = self.price_simulator.next_prices()
-        new_B = self.order_books_B[self.current_idx_B].copy()
-        fills_B = new_B.evolve_one_step(mid_B, SIMULATOR_STEP_DT)[1]
-        new_C = self.order_books_C[self.current_idx_C].copy()
-        fills_C = new_C.evolve_one_step(mid_C, SIMULATOR_STEP_DT)[1]
+    def _print_evolve_timing_block(self, label: str, d: dict) -> None:
+        ms_keys = [k for k in d if not str(k).startswith("count")]
+        ct_keys = [k for k in d if str(k).startswith("count")]
+        print(f"    {label} — internal breakdown:")
+        for k in sorted(ms_keys):
+            print(f"      {k}: {d[k]:.3f} ms")
+        for k in sorted(ct_keys):
+            print(f"      {k}: {d[k]}")
 
+    def simulate_order_book_evolution(self):
+        profile = self._order_book_evolution_calls == 0
+        if profile:
+            print(
+                "======== [warmup: 1st simulate_order_book_evolution] timing breakdown ========"
+            )
+            print(
+                f"  (each evolve: {2 * ORDERBOOK_DEFAULT_LEVELS} Poisson draws in the LO grid "
+                f"— ORDERBOOK_DEFAULT_LEVELS={ORDERBOOK_DEFAULT_LEVELS})"
+            )
+
+        t0 = perf_counter()
+        mid, mid_B, mid_C = self.price_simulator.next_prices()
+        ms_next_prices = (perf_counter() - t0) * 1000.0
+
+        src_B = self.order_books_B[self.current_idx_B]
+        src_C = self.order_books_C[self.current_idx_C]
+        n_orders_B = len(src_B._orders)
+        n_orders_C = len(src_C._orders)
+
+        t0 = perf_counter()
+        new_B = src_B.copy()
+        ms_copy_B = (perf_counter() - t0) * 1000.0
+
+        timing_B: dict | None = {} if profile else None
+        t0 = perf_counter()
+        fills_B = new_B.evolve_one_step(mid_B, SIMULATOR_STEP_DT, _timing=timing_B)[1]
+        ms_evolve_B_wall = (perf_counter() - t0) * 1000.0
+
+        t0 = perf_counter()
+        new_C = src_C.copy()
+        ms_copy_C = (perf_counter() - t0) * 1000.0
+
+        timing_C: dict | None = {} if profile else None
+        t0 = perf_counter()
+        fills_C = new_C.evolve_one_step(mid_C, SIMULATOR_STEP_DT, _timing=timing_C)[1]
+        ms_evolve_C_wall = (perf_counter() - t0) * 1000.0
+
+        t0 = perf_counter()
         self.order_books_B[(self.current_idx_B + 1) % SIMULATOR_BUFFER_B_SIZE] = new_B
         self.order_books_C[(self.current_idx_C + 1) % SIMULATOR_BUFFER_C_SIZE] = new_C
 
@@ -231,6 +275,32 @@ class MarketSimulator:
             self._register_trade(
                 {"price": o.price, "quantity": qty, "is_ask": o.is_ask, "exchange": exch}
             )
+        ms_buffer_and_trades = (perf_counter() - t0) * 1000.0
+
+        if profile and timing_B is not None and timing_C is not None:
+            ms_total = (
+                ms_next_prices
+                + ms_copy_B
+                + ms_evolve_B_wall
+                + ms_copy_C
+                + ms_evolve_C_wall
+                + ms_buffer_and_trades
+            )
+            print(f"  next_prices: {ms_next_prices:.3f} ms")
+            print(f"  copy_B: {ms_copy_B:.3f} ms (source orders in _orders: {n_orders_B})")
+            print(f"  evolve_B wall clock: {ms_evolve_B_wall:.3f} ms")
+            self._print_evolve_timing_block("book B", timing_B)
+            print(f"  copy_C: {ms_copy_C:.3f} ms (source orders in _orders: {n_orders_C})")
+            print(f"  evolve_C wall clock: {ms_evolve_C_wall:.3f} ms")
+            self._print_evolve_timing_block("book C", timing_C)
+            print(
+                f"  ring_buffer_write + register_trades ({len(all_fills)} fills): "
+                f"{ms_buffer_and_trades:.3f} ms"
+            )
+            print(f"  TOTAL (one simulate_order_book_evolution): {ms_total:.3f} ms")
+            print("======== end warmup 1st evolve profile ========\n")
+
+        self._order_book_evolution_calls += 1
 
     def simulate_200ms_history(self):
         # Warm up B/C ring buffers. B has 21 slots and writes to (idx+1)%21, so slot 0 is only
@@ -277,7 +347,7 @@ class MarketSimulator:
         )
 
         for order_A in orders_A:
-            order_fills = self.order_book_A.add_limit_order(order_A)
+            order_fills = self.order_book_A.add_market_order(order_A)
             hft_fills_A.extend(order_fills)
         fills.extend(hft_fills_A)
         self.market_maker.update_inventory_from_fills(hft_fills_A)
@@ -286,9 +356,9 @@ class MarketSimulator:
         hft_snipe_qty = sum(o.quantity for o in orders_A)
 
         for order_B in orders_B:
-            self.order_books_B[self.current_idx_B].add_limit_order(order_B)
+            self.order_books_B[self.current_idx_B].add_market_order(order_B)
         for order_C in orders_C:
-            self.order_books_C[self.current_idx_C].add_limit_order(order_C)
+            self.order_books_C[self.current_idx_C].add_market_order(order_C)
 
         t0 = _lap_ms("HFT snipe + apply orders on A/B/C", t0)
         if is_first:

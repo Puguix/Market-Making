@@ -347,7 +347,7 @@ class MarketSimulator:
         )
 
         for order_A in orders_A:
-            order_fills = self.order_book_A.add_market_order(order_A)
+            order_fills = self.order_book_A.add_market_order_from_LO(order_A)
             hft_fills_A.extend(order_fills)
         fills.extend(hft_fills_A)
         self.market_maker.update_inventory_from_fills(hft_fills_A)
@@ -356,9 +356,9 @@ class MarketSimulator:
         hft_snipe_qty = sum(o.quantity for o in orders_A)
 
         for order_B in orders_B:
-            self.order_books_B[self.current_idx_B].add_market_order(order_B)
+            self.order_books_B[self.current_idx_B].add_market_order_from_LO(order_B)
         for order_C in orders_C:
-            self.order_books_C[self.current_idx_C].add_market_order(order_C)
+            self.order_books_C[self.current_idx_C].add_market_order_from_LO(order_C)
 
         t0 = _lap_ms("HFT snipe + apply orders on A/B/C", t0)
         if is_first:

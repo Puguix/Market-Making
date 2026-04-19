@@ -233,7 +233,7 @@ class OrderBook:
         else:
             return self._match(dummy, self.asks, lambda ask_p: ask_p <= dummy.price)
 
-    def add_market_order(self, order: Order) -> list[tuple[Order, float]]:
+    def add_market_order_from_LO(self, order: Order) -> list[tuple[Order, float]]:
         return self._match(order, self.asks if order.is_ask else self.bids, lambda p: p >= order.price if order.is_ask else p <= order.price)
 
     def cancel(self, order_id: str) -> bool:

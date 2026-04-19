@@ -2,6 +2,7 @@ from collections import deque
 from typing import Deque, Optional, Tuple
 import numpy as np
 from scipy.signal import lfilter
+import matplotlib.pyplot as plt
 
 from config import (
     PRICE_SIM_DEFAULT_S0, PRICE_SIM_DEFAULT_DT_SECONDS,
@@ -88,16 +89,18 @@ class EURUSDPriceSimulator:
         This implementation is vectorised with NumPy to minimise Python
         overhead when simulating long paths (e.g., 24h at 10ms time step).
 
-        Generate 8_640_000 steps by default, which is 24H at 10ms time step.
+        Map the batch linearly across one 24h day in wall time: step k/n_steps
+        corresponds to hour 24*k/n_steps (e.g. k=n_steps/3 -> 8h, k=n_steps/2 -> 12h).
         """
 
-        dt_s = self.dt_seconds
-        dt_h = dt_s / SECONDS_PER_HOUR
+        # One trading day spread over n_steps: each step is 24h/n_steps for σ, jumps, and micro-noise
+        dt_h = HOURS_PER_DAY / float(n_steps)
+        dt_h_ref = self.dt_seconds / SECONDS_PER_HOUR
+        eps_scale = np.sqrt(dt_h / dt_h_ref)
 
-        # Time grid for the new steps (in hours)
+        # Time grid for the new steps (in hours), continuing from the simulation clock
         idx = np.arange(1, n_steps + 1, dtype=float)
-        t_seconds = self._t_seconds + idx * dt_s
-        t_hours = t_seconds / SECONDS_PER_HOUR
+        t_hours = (self._t_seconds / SECONDS_PER_HOUR) + HOURS_PER_DAY * (idx / float(n_steps))
 
         # Intraday seasonal activity φ(t) as in _session_activity, but vectorised
         h = np.mod(t_hours, HOURS_PER_DAY)
@@ -120,7 +123,7 @@ class EURUSDPriceSimulator:
         brownian_pips = sigma_pips * np.sqrt(dt_h) * self._rng.standard_normal(n_steps)
 
         # Macro jump component (Poisson arrivals with Gaussian jump sizes), in pips
-        p_jump = self.lambda_jump_per_day * dt_s / (HOURS_PER_DAY * SECONDS_PER_HOUR)
+        p_jump = self.lambda_jump_per_day / float(n_steps)
         jump_flags = self._rng.random(n_steps) < p_jump
         jump_sizes = self.sigma_jump_pips * self._rng.standard_normal(n_steps)
         jump_pips = np.where(jump_flags, jump_sizes, 0.0)
@@ -131,9 +134,9 @@ class EURUSDPriceSimulator:
         # Build the base mid-price path over the new steps
         base_path = self._current_S + np.cumsum(delta_price)
 
-        # Exchange-specific micro noise so B and C are not exactly equal
-        innovations_B = self._sigma_eps_pips * self._rng.standard_normal(n_steps)
-        innovations_C = self._sigma_eps_pips * self._rng.standard_normal(n_steps)
+        # Exchange-specific micro noise so B and C are not exactly equal (scaled to logical step size)
+        innovations_B = self._sigma_eps_pips  * self._rng.standard_normal(n_steps)
+        innovations_C = self._sigma_eps_pips  * self._rng.standard_normal(n_steps)
 
         # Vectorized AR(1): eps_t = rho * eps_{t-1} + innovation_t
         rho = self._rho_eps
@@ -199,15 +202,31 @@ class EURUSDPriceSimulator:
         """
         self.generate_prices(int(SECONDS_PER_DAY / self.dt_seconds))
 
+    def plot_prices(self) -> None:
+        base_prices = list(self._base_mid)
+        b_prices = list(self._mid_B)
+        c_prices = list(self._mid_C)
+        time_axis_hours = np.linspace(0.0, 24.0, num=len(base_prices), endpoint=False)
+        plt.figure(figsize=(10, 5))
+        plt.plot(time_axis_hours, base_prices, label="Base mid-price", linewidth=1.2)
+        plt.plot(time_axis_hours, b_prices, label="Exchange B mid-price", alpha=0.8, linewidth=0.9)
+        plt.plot(time_axis_hours, c_prices, label="Exchange C mid-price", alpha=0.8, linewidth=0.9)
+        plt.xlabel("Time (hours)")
+        plt.ylabel("EUR/USD mid-price")
+        plt.title("EUR/USD mid-price evolution over 24 hours (base, B, C)")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
 
 if __name__ == "__main__":
     import time
-    import matplotlib.pyplot as plt
 
     # 50 ms time step
-    dt = 0.05  # seconds
+    dt = 0.01  # seconds
 
-    sim = EURUSDPriceSimulator(s0=1.0850, dt_seconds=dt, seed=42)
+    sim = EURUSDPriceSimulator(s0=1.15, dt_seconds=dt)
 
     t0 = time.perf_counter()
     sim.generate_prices_for_simulation_day()
@@ -219,12 +238,14 @@ if __name__ == "__main__":
     base_prices = list(sim._base_mid)
     b_prices = list(sim._mid_B)
     c_prices = list(sim._mid_C)
+    price_diff_b_c = [b - c for b, c in zip(b_prices, c_prices)]
     time_axis_hours = np.linspace(0.0, 24.0, num=len(base_prices), endpoint=False)
 
     plt.figure(figsize=(10, 5))
-    plt.plot(time_axis_hours, base_prices, label="Base mid-price", linewidth=1.2)
-    plt.plot(time_axis_hours, b_prices, label="Exchange B mid-price", alpha=0.8, linewidth=0.9)
-    plt.plot(time_axis_hours, c_prices, label="Exchange C mid-price", alpha=0.8, linewidth=0.9)
+    # plt.plot(time_axis_hours, base_prices, label="Base mid-price", linewidth=1.2)
+    # plt.plot(time_axis_hours, b_prices, label="Exchange B mid-price", alpha=0.8, linewidth=0.9)
+    # plt.plot(time_axis_hours, c_prices, label="Exchange C mid-price", alpha=0.8, linewidth=0.9)
+    plt.plot(time_axis_hours, price_diff_b_c, label="Price difference B-C", alpha=0.8, linewidth=0.9)
     plt.xlabel("Time (hours)")
     plt.ylabel("EUR/USD mid-price")
     plt.title("EUR/USD mid-price evolution over 24 hours (base, B, C)")

@@ -53,6 +53,8 @@ _METRICS_AGG_SCHEMA = {
     "timestamp": pl.Float64,
     "mid_A": pl.Float64,
     "mid_ref": pl.Float64,
+    "mid_B": pl.Float64,
+    "mid_C": pl.Float64,
     "reservation_price": pl.Float64,
     "optimal_spread": pl.Float64,
     "spread_quoted": pl.Float64,
@@ -694,6 +696,8 @@ class MarketMaker:
                 "timestamp": float(timestamp),
                 "mid_A": float(mid_A_display),
                 "mid_ref": float(mid_ref),
+                "mid_B": float(m_B),
+                "mid_C": float(m_C),
                 "reservation_price": float(utility.reservation_price),
                 "optimal_spread": float(utility.optimal_spread),
                 "spread_quoted": s_quoted, # Utilise la version sécurisée

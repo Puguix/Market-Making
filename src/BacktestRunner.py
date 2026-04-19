@@ -140,6 +140,7 @@ class BacktestRunner:
         # --- GRAPH 3: Price & Reservation Price ---
         ax3 = fig.add_subplot(gs[1, 0])
         ax3.plot(df_agg["timestamp"], df_agg["mid_A"], label="Mid A", color="black", alpha=0.3)
+        ax3.plot(df_agg["timestamp"], df_agg["mid_B"], label="Mid B", color="blue", alpha=0.3)
         ax3.plot(df_agg["timestamp"], df_agg["reservation_price"], label="Reservation Price", color="red", linestyle="--")
         ax3.set_title("Mid Price vs Reservation Price (Inventory Skew)", fontsize=14, fontweight='bold')
         ax3.legend()

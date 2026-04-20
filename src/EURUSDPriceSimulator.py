@@ -226,10 +226,10 @@ if __name__ == "__main__":
     # 50 ms time step
     dt = 0.01  # seconds
 
-    sim = EURUSDPriceSimulator(s0=1.15, dt_seconds=dt)
+    sim = EURUSDPriceSimulator(s0=1.15, dt_seconds=dt, seed=13)
 
     t0 = time.perf_counter()
-    sim.generate_prices_for_simulation_day()
+    sim.generate_prices(100_000)
     t1 = time.perf_counter()
 
     print(f"Simulated 24 hours in {t1 - t0:.3f} seconds")
@@ -245,19 +245,26 @@ if __name__ == "__main__":
     hist_counts, bin_edges = np.histogram(price_diff_b_c, bins=50)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     bar_widths = np.diff(bin_edges)
+    total = sum(hist_counts)
+    # Convert counts to percentages
+    hist_percents = (hist_counts / total) * 100 if total > 0 else hist_counts
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(2, 1, figsize=(11, 8))
 
-    ax1.plot(time_axis_hours, price_diff_b_c, label="Price difference B-C", alpha=0.8, linewidth=0.9)
-    ax1.set_xlabel("Time (hours)")
-    ax1.set_ylabel("Price difference (B - C)")
-    ax1.set_title("EUR/USD price difference (B - C) over 24 hours")
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
+    # Graph 1: Time series of base mid price (on top)
+    ax0 = axes[0]
+    ax0.plot(time_axis_hours, base_prices, label="Base mid-price", color="navy", linewidth=1.2)
+    ax0.set_xlabel("Time (hours)")
+    ax0.set_ylabel("EUR/USD mid-price")
+    ax0.set_title("EUR/USD Base Mid-Price over 24 hours")
+    ax0.grid(True, alpha=0.3)
+    ax0.legend()
 
-    ax2.bar(
+    # Graph 2: Histogram (bar chart) of the B-C price difference (below)
+    ax1 = axes[1]
+    ax1.bar(
         bin_centers,
-        hist_counts,
+        hist_percents,
         width=bar_widths,
         align="center",
         alpha=0.75,
@@ -265,12 +272,11 @@ if __name__ == "__main__":
         linewidth=0.4,
         label="Distribution of price difference B-C",
     )
-    ax2.set_xlabel("Price difference (B - C)")
-    ax2.set_ylabel("Frequency")
-    ax2.set_title("Bar chart of price-difference distribution (B - C)")
-    ax2.grid(True, axis="y", alpha=0.3)
-    ax2.legend()
+    ax1.set_xlabel("Price difference (B - C)")
+    ax1.set_ylabel("Occurrence (%)")
+    ax1.set_title("Bar chart of price-difference distribution (B - C)")
+    ax1.grid(True, axis="y", alpha=0.3)
+    ax1.legend()
 
     fig.tight_layout()
     plt.show()
-

@@ -28,6 +28,7 @@ from config import (
     SIMULATOR_HEDGE_LOOKBACK_B, SIMULATOR_HEDGE_LOOKBACK_C,
     SIMULATOR_BUFFER_B_SIZE, SIMULATOR_BUFFER_C_SIZE,
     SIMULATOR_DEFAULT_PHASE,
+    HOURS_PER_DAY,
 )
 
 # Mandatory comment as per instructions:
@@ -58,7 +59,7 @@ class BacktestRunner:
                 os.remove(p)
                 print(f">>> Nettoyage : {os.path.basename(p)} supprimé.")
 
-    def run_simulation(self):
+    def run_simulation(self, seed: Optional[int] = None):
         print(f">>> Démarrage de la simulation ({self.steps} steps, phase={self.phase})...")
         
         # 1. Setup des OrderBooks
@@ -80,7 +81,7 @@ class BacktestRunner:
         )
 
         # 3. Setup du Simulateur
-        price_simulator = EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt)
+        price_simulator = EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt, seed=seed)
         sim = MarketSimulator(
             order_book_A=ob_A,
             order_book_B=ob_B,
@@ -149,6 +150,9 @@ class BacktestRunner:
         ax3.plot(df_agg["timestamp"], df_agg["mid_A"], label="Mid A", color="black", alpha=0.3)
         ax3.plot(df_agg["timestamp"], df_agg["mid_B"], label="Mid B", color="blue", alpha=0.3)
         ax3.plot(df_agg["timestamp"], df_agg["reservation_price"], label="Reservation Price", color="red", linestyle="--")
+        self._shade_session_window(ax3, df_agg["timestamp"], start_hour=8.0, end_hour=9.0, label="London Open")
+        self._shade_session_window(ax3, df_agg["timestamp"], start_hour=13.0, end_hour=16.0, label="London Overlap", color="green")
+   
         ax3.set_title("Mid Price vs Reservation Price (Inventory Skew)", fontsize=14, fontweight='bold')
         ax3.legend()
 
@@ -285,9 +289,37 @@ class BacktestRunner:
 
         sim.market_maker._flush_to_parquet()
         return sim
+
+    @staticmethod
+    def _shade_session_window(
+        ax: plt.Axes,
+        timestamps: pl.Series,
+        start_hour: float,
+        end_hour: float,
+        label: str,
+        color: str = "#ffd166",
+    ) -> None:
+        """
+        Shade an intraday session window on top of a timestamp axis.
+
+        The price simulator maps one generated path across a synthetic 24h day,
+        so we map [start_hour, end_hour] proportionally onto the chart x-range.
+        """
+        x = timestamps.to_numpy()
+        if x.size < 2:
+            return
+
+        x_min = float(np.min(x))
+        x_max = float(np.max(x))
+        if x_max <= x_min:
+            return
+
+        session_start_x = x_min + (start_hour / HOURS_PER_DAY) * (x_max - x_min)
+        session_end_x = x_min + (end_hour / HOURS_PER_DAY) * (x_max - x_min)
+        ax.axvspan(session_start_x, session_end_x, color=color, alpha=0.2, label=label)
     
 
 if __name__ == "__main__":
-    runner = BacktestRunner(steps=10_000, phase=1)
-    simulator = runner.run_simulation()
+    runner = BacktestRunner(steps=5_000, phase=3)
+    simulator = runner.run_simulation(seed=13)
     runner.analyze_and_plot(simulator)

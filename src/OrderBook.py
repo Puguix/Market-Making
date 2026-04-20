@@ -1,4 +1,4 @@
-from collections import deque
+from collections import OrderedDict
 from sortedcontainers import SortedDict
 import math
 import random
@@ -41,23 +41,23 @@ class PriceLevel:
     """
 
     def __init__(self):
-        self.queue: deque[Order] = deque()
+        # FIFO storage with O(1) cancellation by order_id.
+        self.queue: OrderedDict[str, Order] = OrderedDict()
         self.total_qty: float = 0.0
 
     def add(self, order: Order)->None:
         """
         Adding an Order to the price level.
         """
-        self.queue.append(order)
+        self.queue[order.order_id] = order
         self.total_qty += order.quantity
 
     def cancel(self, order_id: str) -> bool:
-        for i, o in enumerate(self.queue):
-            if o.order_id == order_id:
-                self.total_qty -= o.quantity
-                del self.queue[i]
-                return True
-        return False
+        order = self.queue.pop(order_id, None)
+        if order is None:
+            return False
+        self.total_qty -= order.quantity
+        return True
 
     def consume(self, qty: float) -> list[tuple[Order, float]]:
         """
@@ -73,7 +73,7 @@ class PriceLevel:
         remaining = qty
         # as long as there is order at the price level and the quantity is not filled.
         while self.queue and remaining > 0:
-            head = self.queue[0]
+            head = next(iter(self.queue.values()))
             fill_qty = min(head.quantity, remaining)
             fills.append((head, fill_qty))
             remaining -= fill_qty
@@ -82,7 +82,7 @@ class PriceLevel:
 
             # if No more quantity for this order, go to next in the queue
             if head.quantity <= 0:
-                self.queue.popleft()
+                self.queue.popitem(last=False)
         return fills
 
     def __bool__(self):
@@ -118,10 +118,10 @@ class OrderBook:
         ob = OrderBook(self.lambda_a0, self.alpha, self.theta, self.lambda_mo, self.v_unit)
         ob._order_id_seq = self._order_id_seq
         for _price, level in self.bids.items():
-            for o in level.queue:
+            for o in level.queue.values():
                 ob._insert(Order(o.order_id, o.is_ask, o.price, o.quantity), ob.bids)
         for _price, level in self.asks.items():
-            for o in level.queue:
+            for o in level.queue.values():
                 ob._insert(Order(o.order_id, o.is_ask, o.price, o.quantity), ob.asks)
         return ob
 
@@ -190,11 +190,11 @@ class OrderBook:
             new_side = SortedDict(key_func) if key_func else SortedDict()
             for price, level in items:
                 new_price = float(price + delta)
-                for o in level.queue:
+                for o in level.queue.values():
                     o.price = new_price
                 if new_price in new_side:
                     target_level: PriceLevel = new_side[new_price]
-                    target_level.queue.extend(level.queue)
+                    target_level.queue.update(level.queue)
                     target_level.total_qty += level.total_qty
                 else:
                     new_side[new_price] = level
@@ -237,14 +237,21 @@ class OrderBook:
         return self._match(order, self.asks if order.is_ask else self.bids, lambda p: p >= order.price if order.is_ask else p <= order.price)
 
     def cancel(self, order_id: str) -> bool:
-        order = self._orders.pop(order_id, None)
+        order = self._orders.get(order_id)
         if not order:
             return False
         side = self.asks if order.is_ask else self.bids
-        if order.price in side:
-            side[order.price].cancel(order_id)
-            if not side[order.price]:
-                del side[order.price]
+        level = side.get(order.price)
+        if level is None:
+            return False
+
+        cancelled = level.cancel(order_id)
+        if not cancelled:
+            return False
+
+        self._orders.pop(order_id, None)
+        if not level:
+            del side[order.price]
         return True
 
     def resting_quantity(self, order_id: str) -> float:
@@ -318,12 +325,12 @@ class OrderBook:
         max_depth = n_levels * tick
         for price in list(self.bids.keys()):
             if new_mid - price > max_depth:
-                for o in self.bids[price].queue:
+                for o in self.bids[price].queue.values():
                     self._orders.pop(o.order_id, None)
                 del self.bids[price]
         for price in list(self.asks.keys()):
             if price - new_mid > max_depth:
-                for o in self.asks[price].queue:
+                for o in self.asks[price].queue.values():
                     self._orders.pop(o.order_id, None)
                 del self.asks[price]
         _lap("2_prune_far_levels")
@@ -332,7 +339,7 @@ class OrderBook:
         p_cancel = 1.0 - math.exp(-self.theta * dt)
         for side_name, side_dict in (("bid", self.bids), ("ask", self.asks)):
             for price, level in list(side_dict.items()):
-                to_cancel = [o.order_id for o in list(level.queue) if random.random() < p_cancel]
+                to_cancel = [o.order_id for o in list(level.queue.values()) if random.random() < p_cancel]
                 for oid in to_cancel:
                     self.cancel(oid)
         _lap("3_cancellations")

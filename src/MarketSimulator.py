@@ -12,6 +12,7 @@ from config import (
     FEES_TAKER_B, FEES_TAKER_C, SIMULATOR_BUFFER_B_SIZE,
     SIMULATOR_BUFFER_C_SIZE, SIMULATOR_STEP_DT, SIMULATOR_HFT_LOOKBACK_STEPS,
     SIMULATOR_HEDGE_LOOKBACK_B, SIMULATOR_HEDGE_LOOKBACK_C, 
+    SIMULATOR_MM_B_LOOKBACK_STEPS, SIMULATOR_MM_C_LOOKBACK_STEPS,
     SIMULATOR_TOP_TRADES_COUNT,
     SIMULATOR_RANDOM_BUY_PROB, SIMULATOR_ORGANIC_LAMBDA_SCALE,
     SIMULATOR_DEFAULT_PHASE,
@@ -385,7 +386,6 @@ class MarketSimulator:
                 prob_one_sided=HFT_PROB_ONE_SIDED,
             )
             fills.extend(hft_mm_fills)
-            self.market_maker.update_inventory_from_fills(hft_mm_fills)
 
         t0 = _lap_ms("HFT make_market_on_A (phase 3)", t0)
         if is_first:
@@ -446,8 +446,8 @@ class MarketSimulator:
         # Then let the market maker make the market on A
         self.market_maker.make_market(
             self.order_book_A,
-            self.order_books_B[self.current_idx_B],
-            self.order_books_C[self.current_idx_C]
+            self.order_books_B[(self.current_idx_B - SIMULATOR_MM_B_LOOKBACK_STEPS) % SIMULATOR_BUFFER_B_SIZE],
+            self.order_books_C[(self.current_idx_C - SIMULATOR_MM_C_LOOKBACK_STEPS) % SIMULATOR_BUFFER_C_SIZE]
         )
 
         t0 = _lap_ms("make_market on A", t0)

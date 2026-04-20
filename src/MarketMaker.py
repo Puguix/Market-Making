@@ -6,6 +6,7 @@ import random
 from abc import ABC, abstractmethod
 import time
 import os
+from collections import deque
 from typing import Optional
 import warnings
 
@@ -318,6 +319,14 @@ class MarketMaker:
         self._last_mid_ref = s0          
         self._qty_posted_bid = 0.0      
         self._qty_posted_ask = 0.0       
+        self._qty_filled_bid = 0.0
+        self._qty_filled_ask = 0.0
+        self._long_lots: deque[tuple[float, float]] = deque()   # (qty, price)
+        self._short_lots: deque[tuple[float, float]] = deque()  # (qty, price)
+        if self.EUR_quantity > 0:
+            self._long_lots.append((float(self.EUR_quantity), float(self.s0)))
+        elif self.EUR_quantity < 0:
+            self._short_lots.append((float(-self.EUR_quantity), float(self.s0)))
 
         # Orders
         self._active_orders: dict[str, list[tuple[str, float]]] = {}  # "bid_1.0850" -> [("MM_42", 300_000), ("MM_87", 150_000)]
@@ -583,6 +592,40 @@ class MarketMaker:
         return fills
 
     # ===== Update inventory =====
+    def _apply_fill_to_cost_basis(self, is_ask: bool, price: float, qty: float) -> None:
+        """FIFO realized PnL on fills: close opposite lots first, then open new lot."""
+        if qty <= 0:
+            return
+
+        if is_ask:
+            remaining = qty
+            while remaining > 0 and self._long_lots:
+                lot_qty, lot_price = self._long_lots[0]
+                matched = min(remaining, lot_qty)
+                self._realized_pnl += (price - lot_price) * matched
+                remaining -= matched
+                lot_qty -= matched
+                if lot_qty <= 1e-12:
+                    self._long_lots.popleft()
+                else:
+                    self._long_lots[0] = (lot_qty, lot_price)
+            if remaining > 0:
+                self._short_lots.append((remaining, price))
+        else:
+            remaining = qty
+            while remaining > 0 and self._short_lots:
+                lot_qty, lot_price = self._short_lots[0]
+                matched = min(remaining, lot_qty)
+                self._realized_pnl += (lot_price - price) * matched
+                remaining -= matched
+                lot_qty -= matched
+                if lot_qty <= 1e-12:
+                    self._short_lots.popleft()
+                else:
+                    self._short_lots[0] = (lot_qty, lot_price)
+            if remaining > 0:
+                self._long_lots.append((remaining, price))
+
     def update_inventory_from_fills(self, fills: list) -> None:
         for order, qty in fills:
             if not order.order_id.startswith("MM_"):
@@ -592,11 +635,10 @@ class MarketMaker:
             if order.is_ask:
                 self.EUR_quantity -= qty
                 self.USD_quantity += qty * order.price
-                self._realized_pnl += (order.price - self._last_mid_ref) * qty
             else:
                 self.EUR_quantity += qty
                 self.USD_quantity -= qty * order.price
-                self._realized_pnl += (self._last_mid_ref - order.price) * qty
+            self._apply_fill_to_cost_basis(order.is_ask, order.price, qty)
 
             # Mise à jour tracking FIFO
             side_prefix = "ask" if order.is_ask else "bid"
@@ -623,14 +665,10 @@ class MarketMaker:
         if self._metrics_rt_rows:
             pl.DataFrame(self._metrics_rt_rows, schema=_METRICS_RT_SCHEMA).write_parquet(PARQUET_PATH_REALTIME)
             self._metrics_rt_rows.clear()
-        else:
-            pl.DataFrame([], schema=_METRICS_RT_SCHEMA).write_parquet(PARQUET_PATH_REALTIME)
 
         if self._metrics_agg_rows:
             pl.DataFrame(self._metrics_agg_rows, schema=_METRICS_AGG_SCHEMA).write_parquet(PARQUET_PATH_AGGREGATED)
             self._metrics_agg_rows.clear()
-        else:
-            pl.DataFrame([], schema=_METRICS_AGG_SCHEMA).write_parquet(PARQUET_PATH_AGGREGATED)
 
     def save_metrics(
         self,
@@ -693,6 +731,10 @@ class MarketMaker:
         self._metrics_rt_rows.append(row_rt)
 
         # 6. ENREGISTREMENT AGGREGATED (Tous les 100 steps)
+        mm_fills = [f for f in fills if f[0].order_id.startswith("MM_")]
+        self._qty_filled_bid += sum(f[1] for f in mm_fills if not f[0].is_ask)
+        self._qty_filled_ask += sum(f[1] for f in mm_fills if f[0].is_ask)
+
         if self._step_count % MARKET_MAKER_AGGREGATION_STEPS == 0:
             # On recrée le problème d'utilité pour avoir reservation_price et optimal_spread
             utility = self._build_utility_problem(mid_B=mid_ref, mid_C=mid_ref)
@@ -708,22 +750,23 @@ class MarketMaker:
             a_price = float(a_price) if a_price is not None else 0.0
             # --------------------------------------------
 
-            mm_fills = [f for f in fills if f[0].order_id.startswith("MM_")]
             total_qty = sum(f[1] for f in mm_fills)
             spread_cap = sum(abs(f[0].price - mid_ref) * f[1] for f in mm_fills) / total_qty if total_qty > 0 else 0.0
 
             # fill_rate : qty fillée / qty postée sur la fenêtre agrégée
             fill_rate_bid = (
-                sum(f[1] for f in mm_fills if not f[0].is_ask) / self._qty_posted_bid
+                self._qty_filled_bid / self._qty_posted_bid
                 if self._qty_posted_bid > 0 else 0.0
             )
             fill_rate_ask = (
-                sum(f[1] for f in mm_fills if f[0].is_ask) / self._qty_posted_ask
+                self._qty_filled_ask / self._qty_posted_ask
                 if self._qty_posted_ask > 0 else 0.0
             )
             # Reset pour la prochaine fenêtre
             self._qty_posted_bid = 0.0
             self._qty_posted_ask = 0.0
+            self._qty_filled_bid = 0.0
+            self._qty_filled_ask = 0.0
 
             row_agg = {
                 "timestamp": float(timestamp),
@@ -897,7 +940,6 @@ class MarketMaker:
             qty_secondary = min(hedge_qty_eur - qty_primary, qty_B)
             primary = "C"
 
-        import time
         order_B = None
         order_C = None
 

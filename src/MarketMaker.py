@@ -867,6 +867,17 @@ class MarketMaker:
         if len(df) == 0:
             return pl.DataFrame()
 
+        regime_pct = {"Normal": 0.0, "Alert": 0.0, "Hedge": 0.0}
+        if os.path.exists(PARQUET_PATH_REALTIME):
+            df_rt = pl.read_parquet(PARQUET_PATH_REALTIME)
+            if len(df_rt) > 0 and "hedge_regime" in df_rt.columns:
+                regime_counts = df_rt.group_by("hedge_regime").len()
+                total_obs = int(regime_counts["len"].sum())
+                if total_obs > 0:
+                    for row in regime_counts.iter_rows(named=True):
+                        regime_name = str(row["hedge_regime"])
+                        regime_pct[regime_name] = 100.0 * float(row["len"]) / float(total_obs)
+
         return df.select([
             pl.col("mtm_pnl").mean().alias("avg_mtm_pnl"),
             pl.col("mtm_pnl").median().alias("median_mtm_pnl"),
@@ -880,7 +891,10 @@ class MarketMaker:
             pl.col("hft_snipe_count").sum().alias("total_hft_snipes"),
             pl.col("hft_snipe_qty").sum().alias("total_hft_qty_sniped"),
             pl.col("inventory_pct").mean().alias("avg_inventory_pct"),
-            pl.col("hedge_regime").value_counts().alias("regime_distribution"),
+        ]).with_columns([
+            pl.lit(regime_pct["Normal"]).alias("pct_time_normal"),
+            pl.lit(regime_pct["Alert"]).alias("pct_time_alert"),
+            pl.lit(regime_pct["Hedge"]).alias("pct_time_hedge"),
         ])
 
     def get_EUR_quantity(self) -> float:

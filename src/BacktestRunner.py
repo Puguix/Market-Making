@@ -18,7 +18,9 @@ from config import (
     BACKTEST_MM_SIGMA, BACKTEST_MM_KAPPA,
     LAMBDA_A0_A, ALPHA_A, THETA_A, LAMBDA_MO_A, V_UNIT_A,
     FILL_RATE_YMAX_MULTIPLIER, FALLBACK_FILL_RATE_YMAX,
-    INVENTORY_ALERT_LINE_PCT, INVENTORY_YMAX_PCT, PIPS_MULTIPLIER,
+    INVENTORY_ALERT_LOW_LINE_PCT, INVENTORY_ALERT_HIGH_LINE_PCT,
+    INVENTORY_HEDGE_LOW_LINE_PCT, INVENTORY_HEDGE_HIGH_LINE_PCT,
+    INVENTORY_YMAX_PCT, PIPS_MULTIPLIER,
     HFT_MARKER_SIZE_DIVISOR, PLOT_FIGSIZE, PLOT_GRIDSPEC_ROWS,
     PLOT_GRIDSPEC_COLS, PLOT_DPI, TABLE_FONT_SIZE, TABLE_SCALE_X,
     TABLE_SCALE_Y, BACKTEST_REPORT_PATH, LAMBDA_A0_B, ALPHA_B, THETA_B,
@@ -131,9 +133,14 @@ class BacktestRunner:
 
         # --- GRAPH 2: Inventory & Skew ---
         ax2 = fig.add_subplot(gs[0, 1])
-        ax2.plot(df_rt["timestamp"], df_rt["inventory_pct"] * 100, color="#ff7f0e", label="Inventory % Usage")
-        ax2.axhline(INVENTORY_ALERT_LINE_PCT, color='r', linestyle='--', alpha=0.5, label="Alert Threshold")
-        ax2.set_title("Utilisation de la Limite d'Inventaire (%)", fontsize=14, fontweight='bold')
+        inventory_value_usd = df_rt["EUR_quantity"] * df_rt["mid_ref"] + df_rt["USD_quantity"]
+        eur_share_pct = 100 * (df_rt["EUR_quantity"] * df_rt["mid_ref"]) / inventory_value_usd
+        ax2.plot(df_rt["timestamp"], eur_share_pct, color="#ff7f0e", label="EUR share in inventory value (%)")
+        ax2.axhline(INVENTORY_ALERT_LOW_LINE_PCT, color='orange', linestyle='--', alpha=0.7, label="Alert Low (25%)")
+        ax2.axhline(INVENTORY_ALERT_HIGH_LINE_PCT, color='orange', linestyle='--', alpha=0.7, label="Alert High (75%)")
+        ax2.axhline(INVENTORY_HEDGE_LOW_LINE_PCT, color='red', linestyle='--', alpha=0.8, label="Hedge Low (10%)")
+        ax2.axhline(INVENTORY_HEDGE_HIGH_LINE_PCT, color='red', linestyle='--', alpha=0.8, label="Hedge High (90%)")
+        ax2.set_title("Part EUR dans la Valeur d'Inventaire (%)", fontsize=14, fontweight='bold')
         ax2.set_ylim(0, INVENTORY_YMAX_PCT)
         ax2.legend()
 

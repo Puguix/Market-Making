@@ -241,16 +241,36 @@ if __name__ == "__main__":
     price_diff_b_c = [b - c for b, c in zip(b_prices, c_prices)]
     time_axis_hours = np.linspace(0.0, 24.0, num=len(base_prices), endpoint=False)
 
-    plt.figure(figsize=(10, 5))
-    # plt.plot(time_axis_hours, base_prices, label="Base mid-price", linewidth=1.2)
-    # plt.plot(time_axis_hours, b_prices, label="Exchange B mid-price", alpha=0.8, linewidth=0.9)
-    # plt.plot(time_axis_hours, c_prices, label="Exchange C mid-price", alpha=0.8, linewidth=0.9)
-    plt.plot(time_axis_hours, price_diff_b_c, label="Price difference B-C", alpha=0.8, linewidth=0.9)
-    plt.xlabel("Time (hours)")
-    plt.ylabel("EUR/USD mid-price")
-    plt.title("EUR/USD mid-price evolution over 24 hours (base, B, C)")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
+    # Bar chart of the distribution of the B-C price difference.
+    hist_counts, bin_edges = np.histogram(price_diff_b_c, bins=50)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    bar_widths = np.diff(bin_edges)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax1.plot(time_axis_hours, price_diff_b_c, label="Price difference B-C", alpha=0.8, linewidth=0.9)
+    ax1.set_xlabel("Time (hours)")
+    ax1.set_ylabel("Price difference (B - C)")
+    ax1.set_title("EUR/USD price difference (B - C) over 24 hours")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+
+    ax2.bar(
+        bin_centers,
+        hist_counts,
+        width=bar_widths,
+        align="center",
+        alpha=0.75,
+        edgecolor="black",
+        linewidth=0.4,
+        label="Distribution of price difference B-C",
+    )
+    ax2.set_xlabel("Price difference (B - C)")
+    ax2.set_ylabel("Frequency")
+    ax2.set_title("Bar chart of price-difference distribution (B - C)")
+    ax2.grid(True, axis="y", alpha=0.3)
+    ax2.legend()
+
+    fig.tight_layout()
     plt.show()
 

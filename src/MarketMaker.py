@@ -319,8 +319,8 @@ class MarketMaker:
         self._realized_pnl = 0.0
         self._hedge_cost = 0.0
         self._last_mid_ref = s0          
-        self._qty_posted_bid = 0.0      
-        self._qty_posted_ask = 0.0       
+        self._qty_exposed_bid = 0.0
+        self._qty_exposed_ask = 0.0
         self._qty_filled_bid = 0.0
         self._qty_filled_ask = 0.0
         self._long_lots: deque[tuple[float, float]] = deque()   # (qty, price)
@@ -332,6 +332,7 @@ class MarketMaker:
 
         # Orders
         self._active_orders: dict[str, list[tuple[str, float]]] = {}  # "bid_1.0850" -> [("MM_42", 300_000), ("MM_87", 150_000)]
+        self._order_meta: dict[str, tuple[bool, float]] = {}  # order_id -> (is_ask, qty_remaining)
         self._last_posted_mid: Optional[float] = None
         self._has_new_fills: bool = False
         self._ema_spread_A: Optional[float] = None
@@ -419,6 +420,39 @@ class MarketMaker:
             for oid, _ in rows:
                 ids.append(oid)
         return ids
+
+    def _best_resting_mm_order_ids(self) -> set[str]:
+        """
+        Return MM order ids currently resting at MM best bid and MM best ask only.
+        This approximates liquidity genuinely exposed to immediate trading interest.
+        """
+        best_bid_px: Optional[float] = None
+        best_ask_px: Optional[float] = None
+        best_bid_ids: set[str] = set()
+        best_ask_ids: set[str] = set()
+
+        for key, rows in self._active_orders.items():
+            if not rows:
+                continue
+            side, _, rest = key.partition("_")
+            try:
+                px = float(rest)
+            except ValueError:
+                continue
+            row_ids = {oid for oid, _ in rows}
+            if side == "bid":
+                if best_bid_px is None or px > best_bid_px:
+                    best_bid_px = px
+                    best_bid_ids = row_ids
+                elif px == best_bid_px:
+                    best_bid_ids.update(row_ids)
+            elif side == "ask":
+                if best_ask_px is None or px < best_ask_px:
+                    best_ask_px = px
+                    best_ask_ids = row_ids
+                elif px == best_ask_px:
+                    best_ask_ids.update(row_ids)
+        return best_bid_ids.union(best_ask_ids)
 
     def _phase3_inventory_pressure(self, leg_share: float) -> float:
         lo = MM_PHASE3_INVENTORY_RAMP_START_LEG
@@ -575,7 +609,16 @@ class MarketMaker:
         orders_to_submit: list[Order],
     ) -> list[tuple[Order, float]]:
         """Cancel then post; refresh ``_active_orders`` from ``orders_to_submit``."""
+        exposed_ids = self._best_resting_mm_order_ids()
         for oid in order_ids_to_cancel:
+            meta = self._order_meta.pop(oid, None)
+            if meta is not None and oid in exposed_ids:
+                is_ask, qty_remaining = meta
+                if qty_remaining > 0:
+                    if is_ask:
+                        self._qty_exposed_ask += qty_remaining
+                    else:
+                        self._qty_exposed_bid += qty_remaining
             order_book_A.cancel(oid)
         self._active_orders.clear()
         fills: list[tuple[Order, float]] = []
@@ -583,13 +626,14 @@ class MarketMaker:
             xf = order_book_A.add_limit_order(order)
             self.update_inventory_from_fills(xf)
             fills.extend(xf)
-            lvl_key = f"{'ask' if order.is_ask else 'bid'}_{round(order.price, 4)}"
-            self._active_orders[lvl_key] = [(order.order_id, order.quantity)]
-
-            if order.is_ask:
-                self._qty_posted_ask += order.quantity
-            else:
-                self._qty_posted_bid += order.quantity
+            filled_now = sum(
+                qty for fill_order, qty in xf if fill_order.order_id == order.order_id
+            )
+            qty_remaining = max(0.0, order.quantity - filled_now)
+            if qty_remaining > 0:
+                lvl_key = f"{'ask' if order.is_ask else 'bid'}_{round(order.price, 4)}"
+                self._active_orders[lvl_key] = [(order.order_id, qty_remaining)]
+                self._order_meta[order.order_id] = (order.is_ask, qty_remaining)
 
         return fills
 
@@ -641,6 +685,14 @@ class MarketMaker:
                 self.EUR_quantity += qty
                 self.USD_quantity -= qty * order.price
             self._apply_fill_to_cost_basis(order.is_ask, order.price, qty)
+
+            if order.order_id in self._order_meta:
+                is_ask_meta, qty_remaining = self._order_meta[order.order_id]
+                new_qty_remaining = max(0.0, qty_remaining - qty)
+                if new_qty_remaining > 0:
+                    self._order_meta[order.order_id] = (is_ask_meta, new_qty_remaining)
+                else:
+                    self._order_meta.pop(order.order_id, None)
 
             # Mise à jour tracking FIFO
             side_prefix = "ask" if order.is_ask else "bid"
@@ -755,18 +807,18 @@ class MarketMaker:
             total_qty = sum(f[1] for f in mm_fills)
             spread_cap = sum(abs(f[0].price - mid_ref) * f[1] for f in mm_fills) / total_qty if total_qty > 0 else 0.0
 
-            # fill_rate : qty fillée / qty postée sur la fenêtre agrégée
+            # fill_rate : qty fillée / qty exposée (top of book) sur la fenêtre agrégée
             fill_rate_bid = (
-                self._qty_filled_bid / self._qty_posted_bid
-                if self._qty_posted_bid > 0 else 0.0
+                self._qty_filled_bid / self._qty_exposed_bid
+                if self._qty_exposed_bid > 0 else 0.0
             )
             fill_rate_ask = (
-                self._qty_filled_ask / self._qty_posted_ask
-                if self._qty_posted_ask > 0 else 0.0
+                self._qty_filled_ask / self._qty_exposed_ask
+                if self._qty_exposed_ask > 0 else 0.0
             )
             # Reset pour la prochaine fenêtre
-            self._qty_posted_bid = 0.0
-            self._qty_posted_ask = 0.0
+            self._qty_exposed_bid = 0.0
+            self._qty_exposed_ask = 0.0
             self._qty_filled_bid = 0.0
             self._qty_filled_ask = 0.0
 
@@ -859,6 +911,7 @@ class MarketMaker:
             for oid in self._flatten_mm_order_ids():
                 order_book_A.cancel(oid)
             self._active_orders.clear()
+            self._order_meta.clear()
             return
 
         utility_problem = self._build_utility_problem(

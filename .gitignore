@@ -209,3 +209,6 @@ __marimo__/
 
 # Outputs
 output/
+
+# Optuna
+mm_optim.db

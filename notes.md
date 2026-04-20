@@ -1,1 +1,0 @@
-calibration des params un peu random vu que notre pnl est pas déterministic vis a vis de nos params, part de rng

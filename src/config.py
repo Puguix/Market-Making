@@ -10,7 +10,7 @@ PARQUET_PATH_AGGREGATED = os.path.join(OUTPUT_DIR, "metrics_aggregated.parquet")
 BACKTEST_REPORT_PATH = os.path.join(OUTPUT_DIR, "full_backtest_report.png")  # Path for the generated report image.
 PARQUET_PATH_FILLS_LOG = os.path.join(OUTPUT_DIR, "metrics_fills_log.parquet")  # Output file storing detailed fill events.
 
-# Fees / HFT constants
+# Fees constants
 FEES_TAKER_A = 0.0004  # Taker fee rate on venue A.
 FEES_MAKER_A = 0.0001  # Maker fee rate on venue A.
 FEES_TAKER_B = 0.0002  # Taker fee rate on venue B.

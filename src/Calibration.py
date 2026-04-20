@@ -45,8 +45,8 @@ def check_constraints(df_agg: pl.DataFrame, params: dict) -> list[float]:
 def objective(trial: optuna.Trial) -> float:
 
     # --- PARMAS GRIS ---
-    gamma         = trial.suggest_float("gamma", 0.001, 0.5, log=True)
-    kappa         = trial.suggest_float("kappa", 1000.0, 150_000.0, log=True)
+    gamma         = trial.suggest_float("gamma", 0.01, 0.5, log=True)
+    kappa         = trial.suggest_float("kappa", 10_000.0, 500_000.0, log=True)
     # delta_grid    = trial.suggest_float("delta_grid", 0.00005, 0.0005)
     # geo_increment = trial.suggest_float("geo_increment", 1.1, 2.5)
     # qty_alpha     = trial.suggest_float("qty_alpha", 0.4, 0.9)
@@ -122,8 +122,8 @@ if __name__ == "__main__":
         study_name="mm_calibration_v1",
         direction="minimize",
         sampler=sampler,
-        storage="sqlite:///mm_optim.db",   # reprise automatique si crash
-        load_if_exists=True,
+        # storage="sqlite:///mm_optim.db",   # reprise automatique si crash
+        # load_if_exists=True,
     )
 
     # # Injection de contraintes dans le sampler

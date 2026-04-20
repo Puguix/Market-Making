@@ -22,7 +22,7 @@ from config import (
     INVENTORY_ALERT_LOW_LINE_PCT, INVENTORY_ALERT_HIGH_LINE_PCT,
     INVENTORY_HEDGE_LOW_LINE_PCT, INVENTORY_HEDGE_HIGH_LINE_PCT,
     INVENTORY_YMAX_PCT, PIPS_MULTIPLIER,
-    HFT_MARKER_SIZE_DIVISOR, PLOT_FIGSIZE, PLOT_GRIDSPEC_ROWS,
+    PLOT_FIGSIZE, PLOT_GRIDSPEC_ROWS,
     PLOT_GRIDSPEC_COLS, PLOT_DPI, TABLE_FONT_SIZE, TABLE_SCALE_X,
     TABLE_SCALE_Y, BACKTEST_REPORT_PATH, LAMBDA_A0_B, ALPHA_B, THETA_B,
     LAMBDA_MO_B, V_UNIT_B, LAMBDA_A0_C, ALPHA_C, THETA_C, LAMBDA_MO_C, V_UNIT_C,
@@ -259,7 +259,7 @@ class BacktestRunner:
         df_agg = pl.read_parquet(path_agg)
 
         fig = plt.figure(figsize=PLOT_FIGSIZE)
-        gs = fig.add_gridspec(4, 2, hspace=0.45, wspace=0.35,
+        gs = fig.add_gridspec(3, 2, hspace=0.45, wspace=0.35,
               top=0.97, bottom=0.03, left=0.06, right=0.97)
 
         # --- GRAPH 1: PnL Evolution ---
@@ -302,13 +302,9 @@ class BacktestRunner:
         ax4.set_ylabel("Pips")
         ax4.legend()
 
-        # --- GRAPH 5: Sniping Activity ---
+        # --- GRAPH 5: MtM aging (was graph 7) ---
         ax5 = fig.add_subplot(gs[2, 0])
-        ax5.scatter(df_agg["timestamp"], df_agg["hft_snipe_count"],
-                    s=df_agg["hft_snipe_qty"] / HFT_MARKER_SIZE_DIVISOR,
-                    alpha=0.5, c="red", label="HFT Snipes")
-        ax5.set_title("Activité de Sniping HFT (Taille = Volume)", fontsize=14, fontweight='bold')
-        ax5.set_ylabel("Nombre d'attaques")
+        self._generate_mtm_aging(ax5, df_rt)
 
         # --- GRAPH 6: Fill Rates ---
         ax6 = fig.add_subplot(gs[2, 1])
@@ -316,10 +312,6 @@ class BacktestRunner:
         ax6.bar(["Bid Fill Rate", "Ask Fill Rate"], avg_fills, color=["#1f77b4", "#d62728"])
         ax6.set_title("Taux d'exécution moyen (Fill Rates)", fontsize=14, fontweight='bold')
         ax6.set_ylim(0, max(avg_fills) * FILL_RATE_YMAX_MULTIPLIER if any(avg_fills) else FALLBACK_FILL_RATE_YMAX)
-
-        # --- GRAPH 7: MtM aging ---
-        ax7 = fig.add_subplot(gs[3, :])
-        self._generate_mtm_aging(ax7, df_rt)
 
         plt.tight_layout()
         plt.savefig(BACKTEST_REPORT_PATH, dpi=PLOT_DPI, bbox_inches='tight')

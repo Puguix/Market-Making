@@ -931,8 +931,6 @@ class MarketMaker:
             pl.col("fill_rate_bid").mean().alias("avg_fill_rate_bid"),
             pl.col("fill_rate_ask").mean().alias("avg_fill_rate_ask"),
             pl.col("spread_capture_pips").mean().alias("avg_spread_capture_pips"),
-            pl.col("hft_snipe_count").sum().alias("total_hft_snipes"),
-            pl.col("hft_snipe_qty").sum().alias("total_hft_qty_sniped"),
             pl.col("inventory_pct").mean().alias("avg_inventory_pct"),
         ]).with_columns([
             pl.lit(regime_pct["Normal"]).alias("pct_time_normal"),

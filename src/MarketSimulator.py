@@ -330,6 +330,15 @@ class MarketSimulator:
         self.simulate_order_book_evolution()
         self.current_idx_B = (self.current_idx_B + 1) % SIMULATOR_BUFFER_B_SIZE
         self.current_idx_C = (self.current_idx_C + 1) % SIMULATOR_BUFFER_C_SIZE
+        # Calculer le mid instantané B/C (sans lag) — référence externe pour spread capture
+        _ob_b_now = self.order_books_B[self.current_idx_B]
+        _ob_c_now = self.order_books_C[self.current_idx_C]
+        _mid_b_now = _ob_b_now.mid if _ob_b_now is not None and _ob_b_now.mid is not None else self.market_maker.s0
+        _mid_c_now = _ob_c_now.mid if _ob_c_now is not None and _ob_c_now.mid is not None else self.market_maker.s0
+        _true_mid = (
+            self.market_maker.WEIGHT_B * _mid_b_now
+            + self.market_maker.WEIGHT_C * _mid_c_now
+        )
         t0 = _lap_ms("simulate_order_book_evolution + buffer advance", t0)
         if is_first:
             self._first_step_log_orderbooks("after order book evolution (B/C stepped)")
@@ -351,7 +360,7 @@ class MarketSimulator:
             order_fills = self.order_book_A.add_market_order_from_LO(order_A)
             hft_fills_A.extend(order_fills)
         fills.extend(hft_fills_A)
-        self.market_maker.update_inventory_from_fills(hft_fills_A)
+        self.market_maker.update_inventory_from_fills(hft_fills_A, mid_ref=_true_mid)
 
         hft_snipe_count = len(orders_A)
         hft_snipe_qty = sum(o.quantity for o in orders_A)
@@ -411,7 +420,7 @@ class MarketSimulator:
             fills_A_organic.extend(self.order_book_A.add_market_order(random() > SIMULATOR_RANDOM_BUY_PROB, self.order_book_A.v_unit))
 
         fills.extend(fills_A_organic)
-        self.market_maker.update_inventory_from_fills(fills_A_organic)
+        self.market_maker.update_inventory_from_fills(fills_A_organic, mid_ref=_true_mid)
 
         t0 = _lap_ms("organic market orders on A", t0)
         if is_first:

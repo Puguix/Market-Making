@@ -122,7 +122,7 @@ class BacktestRunner:
         df_agg = pl.read_parquet(path_agg)
 
         fig = plt.figure(figsize=PLOT_FIGSIZE)
-        gs = fig.add_gridspec(PLOT_GRIDSPEC_ROWS, PLOT_GRIDSPEC_COLS)
+        gs = fig.add_gridspec(4, PLOT_GRIDSPEC_COLS)
 
         # --- GRAPH 1: PnL Evolution ---
         ax1 = fig.add_subplot(gs[0, 0])
@@ -263,6 +263,6 @@ class BacktestRunner:
     
 
 if __name__ == "__main__":
-    runner = BacktestRunner(steps=50_000, phase=1)
+    runner = BacktestRunner(steps=10_000, phase=1)
     simulator = runner.run_simulation()
     runner.analyze_and_plot(simulator)

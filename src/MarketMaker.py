@@ -72,8 +72,7 @@ _METRICS_AGG_SCHEMA = {
     "hedge_cost": pl.Float64,
     "fill_rate_bid": pl.Float64,
     "fill_rate_ask": pl.Float64,
-    "spread_capture": pl.Float64,
-    "adverse_selection": pl.Float64,
+    "spread_capture_pips": pl.Float64,
     "hft_snipe_count": pl.Int32,
     "hft_snipe_qty": pl.Float64,
     "arb_opportunity_count": pl.Int32,
@@ -324,6 +323,8 @@ class MarketMaker:
         self._qty_filled_bid = 0.0
         self._qty_filled_ask = 0.0
         self._spread_capture_accum = 0.0
+        # (price, qty, is_ask, mid_at_fill) — mid capturé au moment du fill
+        self._mm_fills_buffer: list[tuple[float, float, bool, float]] = []
         self._long_lots: deque[tuple[float, float]] = deque()   # (qty, price)
         self._short_lots: deque[tuple[float, float]] = deque()  # (qty, price)
 
@@ -604,6 +605,7 @@ class MarketMaker:
         order_book_A: OrderBook,
         order_ids_to_cancel: list[str],
         orders_to_submit: list[Order],
+        mid_ref: float = 0.0,
     ) -> list[tuple[Order, float]]:
         """Cancel then post; refresh ``_active_orders`` from ``orders_to_submit``."""
         exposed_ids = self._best_resting_mm_order_ids()
@@ -621,7 +623,7 @@ class MarketMaker:
         fills: list[tuple[Order, float]] = []
         for order in orders_to_submit:
             xf = order_book_A.add_limit_order(order)
-            self.update_inventory_from_fills(xf)
+            self.update_inventory_from_fills(xf, mid_ref=mid_ref)
             fills.extend(xf)
             filled_now = sum(
                 qty for fill_order, qty in xf if fill_order.order_id == order.order_id
@@ -669,7 +671,7 @@ class MarketMaker:
             if remaining > 0:
                 self._long_lots.append((remaining, price))
 
-    def update_inventory_from_fills(self, fills: list) -> None:
+    def update_inventory_from_fills(self, fills: list, mid_ref: float = 0.0) -> None:
         for order, qty in fills:
             if not order.order_id.startswith("MM_"):
                 continue
@@ -682,6 +684,7 @@ class MarketMaker:
                 self.EUR_quantity += qty
                 self.USD_quantity -= qty * order.price
             self._apply_fill_to_cost_basis(order.is_ask, order.price, qty)
+            self._mm_fills_buffer.append((order.price, qty, order.is_ask, mid_ref))
 
             if order.order_id in self._order_meta:
                 is_ask_meta, qty_remaining = self._order_meta[order.order_id]
@@ -787,10 +790,13 @@ class MarketMaker:
         self._metrics_rt_rows.append(row_rt)
 
         # 6. ENREGISTREMENT AGGREGATED (Tous les 100 steps)
-        mm_fills = [f for f in fills if f[0].order_id.startswith("MM_")]
-        self._qty_filled_bid += sum(f[1] for f in mm_fills if not f[0].is_ask)
-        self._qty_filled_ask += sum(f[1] for f in mm_fills if f[0].is_ask)
-        self._spread_capture_accum += sum(abs(f[0].price - mid_ref) * f[1] for f in mm_fills)
+        for price, qty, is_ask, fill_mid in self._mm_fills_buffer:
+            if not is_ask:
+                self._qty_filled_bid += qty
+            else:
+                self._qty_filled_ask += qty
+            self._spread_capture_accum += abs(price - fill_mid) * qty
+        self._mm_fills_buffer.clear()
 
         if self._step_count % MARKET_MAKER_AGGREGATION_STEPS == 0:
             # On recrée le problème d'utilité pour avoir reservation_price et optimal_spread
@@ -808,7 +814,11 @@ class MarketMaker:
             # --------------------------------------------
 
             total_qty_window = self._qty_filled_bid + self._qty_filled_ask
-            spread_cap = self._spread_capture_accum / total_qty_window if total_qty_window > 0 else 0.0
+            spread_cap = (
+                (self._spread_capture_accum / total_qty_window) * 10_000
+                if total_qty_window > 0
+                else 0.0
+            )
 
             # fill_rate : qty fillée / qty exposée (top of book) sur la fenêtre agrégée
             fill_rate_bid = (
@@ -848,8 +858,7 @@ class MarketMaker:
                 "hedge_cost": float(self._hedge_cost),
                 "fill_rate_bid": float(fill_rate_bid),     
                 "fill_rate_ask": float(fill_rate_ask),     
-                "spread_capture": float(spread_cap),
-                "adverse_selection": 0.0,                 
+                "spread_capture_pips": float(spread_cap),
                 "hft_snipe_count": int(hft_snipe_count),
                 "hft_snipe_qty": float(hft_snipe_qty),
                 "arb_opportunity_count": int(hft_snipe_count),
@@ -891,7 +900,7 @@ class MarketMaker:
             pl.col("hedge_cost").last().alias("total_hedge_cost"),
             pl.col("fill_rate_bid").mean().alias("avg_fill_rate_bid"),
             pl.col("fill_rate_ask").mean().alias("avg_fill_rate_ask"),
-            pl.col("spread_capture").mean().alias("avg_spread_capture"),
+            pl.col("spread_capture_pips").mean().alias("avg_spread_capture_pips"),
             pl.col("hft_snipe_count").sum().alias("total_hft_snipes"),
             pl.col("hft_snipe_qty").sum().alias("total_hft_qty_sniped"),
             pl.col("inventory_pct").mean().alias("avg_inventory_pct"),
@@ -951,7 +960,7 @@ class MarketMaker:
             cancel_ids, orders_to_submit = self.plan_phase3_quote_actions(
                 order_book_A, order_book_B, order_book_C
             )
-        self.apply_quote_plan(order_book_A, cancel_ids, orders_to_submit)
+        self.apply_quote_plan(order_book_A, cancel_ids, orders_to_submit, mid_ref=new_mid)
 
         self._last_posted_mid = new_mid
         self._has_new_fills = False

@@ -5,6 +5,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PARQUET_PATH_REALTIME = os.path.join(BASE_DIR, "metrics_realtime.parquet")
 PARQUET_PATH_AGGREGATED = os.path.join(BASE_DIR, "metrics_aggregated.parquet")
 BACKTEST_REPORT_PATH = os.path.join(BASE_DIR, "full_backtest_report.png")
+PARQUET_PATH_FILLS_LOG = os.path.join(BASE_DIR, "metrics_fills_log.parquet")
 
 # Fees / HFT constants
 FEES_TAKER_A = 0.0004
@@ -86,7 +87,7 @@ SIMULATOR_DEFAULT_PHASE = 1
 SIMULATOR_PHASE1_ORGANIC_LAMBDA_MULTIPLIER = 3
 
 # Backtest plotting constants
-PLOT_FIGSIZE = (18, 14)
+PLOT_FIGSIZE = (20, 14)
 PLOT_GRIDSPEC_ROWS = 4
 PLOT_GRIDSPEC_COLS = 2
 PLOT_DPI = 300

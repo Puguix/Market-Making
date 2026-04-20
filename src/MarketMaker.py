@@ -13,7 +13,7 @@ import warnings
 from HFT import HFT, HFT_MM_ASK_ORDER_ID, HFT_MM_BID_ORDER_ID
 
 from config import (
-    FEES_TAKER_B, FEES_TAKER_C, PARQUET_PATH_REALTIME, PARQUET_PATH_AGGREGATED, DEFAULT_MAX_LEVELS,
+    FEES_TAKER_B, FEES_TAKER_C, PARQUET_PATH_REALTIME, PARQUET_PATH_AGGREGATED, PARQUET_PATH_FILLS_LOG, DEFAULT_MAX_LEVELS,
     DEFAULT_TICK_SIZE, DEFAULT_GEO_INCREMENT, DEFAULT_GEO_QTY_ALPHA,
     MIN_REMAINING_TIME, PIPS_TO_PRICE_SCALE, DEFAULT_FEES_PIPS,
     DEFAULT_INITIAL_CAPITAL, MARKET_MAKER_WEIGHT_B, MARKET_MAKER_WEIGHT_C,
@@ -79,6 +79,14 @@ _METRICS_AGG_SCHEMA = {
     "arb_opportunity_size": pl.Float64,
 }
 
+# For MtM aging
+_FILLS_LOG_SCHEMA = {
+    "timestamp_fill": pl.Float64,
+    "fill_price":     pl.Float64,
+    "is_ask":         pl.Boolean,
+    "qty":            pl.Float64,
+    "mid_at_fill":    pl.Float64,
+}
 # %%%%%% Price Grid Methods %%%%%%
 
 class PriceGridStrategy(ABC):
@@ -340,6 +348,9 @@ class MarketMaker:
 
         self._metrics_rt_rows: list[dict] = []
         self._metrics_agg_rows: list[dict] = []
+
+        # For MtM aging
+        self._fills_log_rows: list[dict] = []
 
     def advance_clock(self, dt: float) -> None:
         """Advance internal clock by one simulation step (must match price simulator dt)."""
@@ -686,6 +697,14 @@ class MarketMaker:
             self._apply_fill_to_cost_basis(order.is_ask, order.price, qty)
             self._mm_fills_buffer.append((order.price, qty, order.is_ask, mid_ref))
 
+            self._fills_log_rows.append({
+                "timestamp_fill": float(self._t),
+                "fill_price": float(order.price),
+                "is_ask": bool(order.is_ask),
+                "qty": float(qty),
+                "mid_at_fill": float(mid_ref),
+            })
+
             if order.order_id in self._order_meta:
                 is_ask_meta, qty_remaining = self._order_meta[order.order_id]
                 new_qty_remaining = max(0.0, qty_remaining - qty)
@@ -723,6 +742,11 @@ class MarketMaker:
         if self._metrics_agg_rows:
             pl.DataFrame(self._metrics_agg_rows, schema=_METRICS_AGG_SCHEMA).write_parquet(PARQUET_PATH_AGGREGATED)
             self._metrics_agg_rows.clear()
+
+        if self._fills_log_rows:
+            pl.DataFrame(self._fills_log_rows, schema=_FILLS_LOG_SCHEMA).write_parquet(PARQUET_PATH_FILLS_LOG)
+            self._fills_log_rows.clear()
+
 
     def save_metrics(
         self,

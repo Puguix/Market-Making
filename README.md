@@ -10,7 +10,18 @@ Make sure to install the required packages:
 pip install -r requirements.txt
 ```
 
-Run a full simulation with `BacktestRunner.py`. You can also test modules directly by running them.
+Run a full simulation from the project root with:
+
+- macOS / Linux:
+```
+python3 src/BacktestRunner.py
+```
+- Windows (PowerShell or CMD):
+```
+py -3 src\BacktestRunner.py
+```
+
+You can also test modules directly by running them in the same way (replace the script path).
 
 ## Structure of the code
 
@@ -31,10 +42,7 @@ Run a full simulation with `BacktestRunner.py`. You can also test modules direct
 
 - `seed`: controls randomness for reproducible runs. Same seed + same parameters gives the same run.
 - `phase`: selects strategy setup (for example market-maker only vs market-maker + HFT behaviors).
-- `steps`: controls how many simulation ticks are used to represent one trading day.
-
-No matter the number of `steps`, the simulation still represents a full day.  
-Changing `steps` changes the time resolution only (more steps = finer granularity, fewer steps = coarser granularity).
+- `steps`: number of simulation ticks executed (each tick is `dt`, typically 10 ms). The EURUSD simulator still maps a full synthetic day cycle (Tokyo -> London -> New York) over those ticks. So with `dt=10ms`, `5000` steps simulate `50s` of engine time, while the price regime progression is compressed across that run.
 
 ### Output files
 
@@ -42,3 +50,7 @@ Changing `steps` changes the time resolution only (more steps = finer granularit
 - `output/metrics_realtime.parquet`: per-step metrics (time series) generated during the run.
 - `output/metrics_aggregated.parquet`: aggregated metrics and final statistics for the run.
 - `output/metrics_fills_log.parquet`: detailed fill-level log (fills, side, price, quantity, and related context).
+
+## Limitations
+
+With `dt=10ms`, a full day would be `8_640_000` steps. If your computer can run `5_000` steps in `5s` (ours cannot), it will take you `2h30` to run the simulation (if nothing crashes in the meantime). So beware of your inputs!!

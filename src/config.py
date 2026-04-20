@@ -120,20 +120,20 @@ ORDERBOOK_ADVANCED_TEST_BOOK_DEPTH = 10  # Effective displayed depth for advance
 # OrderBook constants
 LAMBDA_A0_B = 5.0  # Baseline limit-order arrival intensity on venue B.
 ALPHA_B = 0.05  # Distance-decay coefficient for venue B arrivals.
-THETA_B = 0.1  # Mean-reversion strength for venue B order book dynamics.
+THETA_B = 1  # Mean-reversion strength for venue B order book dynamics.
 LAMBDA_MO_B = 0.5  # Baseline market-order intensity on venue B.
 V_UNIT_B = 100_000  # Standard order size unit on venue B.
 
 LAMBDA_A0_C = 5.0  # Baseline limit-order arrival intensity on venue C.
 ALPHA_C = 0.05  # Distance-decay coefficient for venue C arrivals.
-THETA_C = 0.1  # Mean-reversion strength for venue C order book dynamics.
+THETA_C = 1  # Mean-reversion strength for venue C order book dynamics.
 LAMBDA_MO_C = 0.5  # Baseline market-order intensity on venue C.
 V_UNIT_C = 100_000  # Standard order size unit on venue C.
 
 # Exchange A defaults
-LAMBDA_A0_A = 50.0  # Baseline limit-order arrival intensity on venue A.
+LAMBDA_A0_A = .5  # Baseline limit-order arrival intensity on venue A.
 ALPHA_A = 0.05  # Distance-decay coefficient for venue A arrivals.
-THETA_A = 0.1  # Mean-reversion strength for venue A order book dynamics.
+THETA_A = 1  # Mean-reversion strength for venue A order book dynamics.
 LAMBDA_MO_A = .05  # Baseline market-order intensity on venue A.
 V_UNIT_A = 50_000  # Standard order size unit on venue A.
 
@@ -141,8 +141,8 @@ V_UNIT_A = 50_000  # Standard order size unit on venue A.
 PRICE_SIM_DEFAULT_S0 = 1.0850  # Default starting FX price for simulator.
 PRICE_SIM_DEFAULT_DT_SECONDS = 0.01  # Simulation timestep for price process.
 PRICE_SIM_DEFAULT_BAR_SIGMA_PIPS = 5.0  # Intraday diffusion volatility (pips).
-PRICE_SIM_DEFAULT_LAMBDA_JUMP_PER_DAY = 4.0  # Expected number of jump events per day.
-PRICE_SIM_DEFAULT_SIGMA_JUMP_PIPS = 7.5  # Jump-size volatility (pips).
+PRICE_SIM_DEFAULT_LAMBDA_JUMP_PER_DAY = 0.13  # Expected number of jump events per day.
+PRICE_SIM_DEFAULT_SIGMA_JUMP_PIPS = 30  # Jump-size volatility (pips).
 PRICE_SIM_DEFAULT_RHO_EPS = 0.9  # Correlation of venue-specific micro-noise shocks.
 PRICE_SIM_DEFAULT_SIGMA_EPS_PIPS = 0.3  # Noise scale on venues B and C (pips).
 SECONDS_PER_HOUR = 3600.0  # Seconds in one hour.

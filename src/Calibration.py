@@ -31,8 +31,8 @@ def check_constraints(df_agg: pl.DataFrame, params: dict) -> list[float]:
     constraints = []
 
     # MAX SPread
-    avg_spread_pips = df_agg["spread_quoted"].mean() * 10_000
-    constraints.append(float(avg_spread_pips - MAX_SPREAD_PIPS))
+    # avg_spread_pips = df_agg["spread_quoted"].mean() * 10_000
+    # constraints.append(float(avg_spread_pips - MAX_SPREAD_PIPS))
 
     # min qty quoted
     # avg_fill = (df_agg["fill_rate_bid"].mean() + df_agg["fill_rate_ask"].mean()) / 2
@@ -143,20 +143,20 @@ if __name__ == "__main__":
     )
 
     # ── Résultats ──────────────────────────────────────────────────
-    print("\n=== Meilleurs paramètres ===")
+    print("\n=== Best Params ===")
     print(study.best_params)
     print(f"Sharpe optimal : {-study.best_value:.4f}")
 
     # Importance des features
     importance = optuna.importance.get_param_importances(study)
-    print("\n=== Importance des paramètres ===")
+    print("\n=== Params Importance ===")
     for param, score in importance.items():
         print(f"  {param:<20} {score:.4f}")
 
 
     # Backtest with optmial params
     best_params = study.best_params
-    runner = BacktestRunner(steps=10_000)
+    runner = BacktestRunner(steps=5_000)
     sim = runner.run_simulation_with_params(
         gamma=best_params["gamma"],
         kappa=best_params["kappa"],

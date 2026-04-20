@@ -72,7 +72,7 @@ class BacktestRunner:
             gamma=BACKTEST_MM_GAMMA,
             sigma=BACKTEST_MM_SIGMA,
             kappa=BACKTEST_MM_KAPPA,
-            T=self.steps * self.dt / 86_400 / 365,
+            T=self.steps * self.dt,
             s0=self.mid_start,
             quote_phase=mm_quote_phase,
         )
@@ -87,7 +87,6 @@ class BacktestRunner:
             price_simulator=price_simulator,
             hft=HFT(),
             phase=self.phase,
-            verbose=False,
         )
 
         # 4. Set up de 200ms de data sur B et C
@@ -236,7 +235,6 @@ class BacktestRunner:
             price_simulator=price_sim,
             hft=HFT(),
             phase=phase,
-            verbose=False,
         )
 
         sim.simulate_200ms_history()

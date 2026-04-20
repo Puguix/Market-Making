@@ -122,7 +122,7 @@ class BacktestRunner:
         df_agg = pl.read_parquet(path_agg)
 
         fig = plt.figure(figsize=PLOT_FIGSIZE)
-        gs = fig.add_gridspec(4, PLOT_GRIDSPEC_COLS)
+        gs = fig.add_gridspec(5, PLOT_GRIDSPEC_COLS)
 
         # --- GRAPH 1: PnL Evolution ---
         ax1 = fig.add_subplot(gs[0, 0])
@@ -192,6 +192,31 @@ class BacktestRunner:
             the_table.auto_set_font_size(False)
             the_table.set_fontsize(TABLE_FONT_SIZE)
             the_table.scale(TABLE_SCALE_X, TABLE_SCALE_Y)
+        # --- GRAPH 7: Top 10 trades by size ---
+        ax7 = fig.add_subplot(gs[4, :])
+        ax7.axis('off')
+
+        top_trades = sim.get_top_trades(10)
+        if top_trades:
+            trade_cell_text = []
+            for i, t in enumerate(top_trades, 1):
+                side = "ASK (sell)" if t["Is Ask"] else "BID (buy)"
+                trade_cell_text.append([
+                    str(i),
+                    f"{t['price']:.5f}",
+                    f"{t['quantity']:,.0f}",
+                    side,
+                ])
+            trade_table = ax7.table(
+                cellText=trade_cell_text,
+                colLabels=["Rank", "Price", "Quantity (EUR)", "Side"],
+                loc='center',
+                cellLoc='center',
+            )
+            trade_table.auto_set_font_size(False)
+            trade_table.set_fontsize(TABLE_FONT_SIZE)
+            trade_table.scale(TABLE_SCALE_X, TABLE_SCALE_Y)
+            ax7.set_title("Top 10 Trades by Size (Exchange A)", fontsize=14, fontweight='bold', pad=20)
 
         plt.tight_layout()
         plt.savefig(BACKTEST_REPORT_PATH, dpi=PLOT_DPI)

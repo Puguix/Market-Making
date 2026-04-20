@@ -46,7 +46,7 @@ def objective(trial: optuna.Trial) -> float:
 
     # --- PARMAS GRIS ---
     gamma         = trial.suggest_float("gamma", 0.001, 0.5, log=True)
-    kappa         = trial.suggest_float("kappa", 10.0, 5000.0, log=True)
+    kappa         = trial.suggest_float("kappa", 1000.0, 150_000.0, log=True)
     # delta_grid    = trial.suggest_float("delta_grid", 0.00005, 0.0005)
     # geo_increment = trial.suggest_float("geo_increment", 1.1, 2.5)
     # qty_alpha     = trial.suggest_float("qty_alpha", 0.4, 0.9)
@@ -55,7 +55,7 @@ def objective(trial: optuna.Trial) -> float:
     # Run Simulation
     trial_id = trial.number
     runner = BacktestRunner(
-        steps=1500
+        steps=10_000
     )
 
     try:
@@ -126,18 +126,18 @@ if __name__ == "__main__":
         load_if_exists=True,
     )
 
-    # Injection de contraintes dans le sampler
-    study.sampler = optuna.samplers.TPESampler(
-        seed=42,
-        multivariate=True,
-        constant_liar=True,
-        constraints_func=lambda t: t.user_attrs.get("constraints", [0.0, 0.0])
-    )
+    # # Injection de contraintes dans le sampler
+    # study.sampler = optuna.samplers.TPESampler(
+    #     seed=42,
+    #     multivariate=True,
+    #     constant_liar=True,
+    #     constraints_func=lambda t: t.user_attrs.get("constraints", [0.0, 0.0])
+    # )
 
     study.optimize(
         objective,
         n_trials=50,
-        n_jobs=4,           # 4 simulations en parallèle
+        n_jobs=1,           # 4 simulations en parallèle
         callbacks=[logging_callback],
         gc_after_trial=True,
     )
@@ -156,7 +156,7 @@ if __name__ == "__main__":
 
     # Backtest with optmial params
     best_params = study.best_params
-    runner = BacktestRunner(steps=5_000)
+    runner = BacktestRunner(steps=50_000)
     sim = runner.run_simulation_with_params(
         gamma=best_params["gamma"],
         kappa=best_params["kappa"],

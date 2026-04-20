@@ -398,8 +398,11 @@ class MarketSimulator:
             )
 
         # Organic MOs on A : spot already shifted with _shift_prices
+        current_spread_A = self.order_book_A.spread
+        if current_spread_A is None:
+            current_spread_A = 0.0001
         n_mo = PoissonGenerator(ArrivalIntensity(
-            spread=self.order_book_A.spread, alpha=ALPHA_A,
+            spread=current_spread_A, alpha=ALPHA_A,
             lambda_0=self.order_book_A.lambda_mo * self._organic_lambda_scale()
         )).generate()
 

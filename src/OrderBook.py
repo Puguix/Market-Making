@@ -189,7 +189,8 @@ class OrderBook:
             items = list(side_dict.items())
             new_side = SortedDict(key_func) if key_func else SortedDict()
             for price, level in items:
-                new_price = float(price + delta)
+                # Keep all quoted levels on a 4-decimal grid after mid shifts.
+                new_price = round(float(price + delta), 4)
                 for o in level.queue.values():
                     o.price = new_price
                 if new_price in new_side:

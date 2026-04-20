@@ -147,9 +147,12 @@ class BacktestRunner:
 
         # --- GRAPH 4: Quoted Spread vs Sniping ---
         ax4 = fig.add_subplot(gs[1, 1])
+        spread_b = (df_agg["best_ask_B"] - df_agg["best_bid_B"]) * PIPS_MULTIPLIER
         ax4.plot(df_agg["timestamp"], df_agg["spread_quoted"] * PIPS_MULTIPLIER, label="Spread A (pips)", color="green")
-        ax4.set_title("Spread Quoté sur A (Pips)", fontsize=14, fontweight='bold')
+        ax4.plot(df_agg["timestamp"], spread_b, label="Spread B bid-ask (pips)", color="purple", alpha=0.8)
+        ax4.set_title("Spread A et Spread B (Pips)", fontsize=14, fontweight='bold')
         ax4.set_ylabel("Pips")
+        ax4.legend()
 
         # --- GRAPH 5: Sniping Activity ---
         ax5 = fig.add_subplot(gs[2, 0])

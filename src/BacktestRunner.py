@@ -141,7 +141,8 @@ class BacktestRunner:
             return
 
         df_rt_ts = df_rt.select(["timestamp", "mid_ref"]).sort("timestamp")
-        horizons_steps = [0, 5, 10, 20, 50, 100, 200]
+        horizons_steps = [0, 2, 5, 10, 20, 50, 100]
+
         dt = self.dt
 
         # Explode : une ligne par (fill, horizon)
@@ -397,6 +398,6 @@ class BacktestRunner:
     
 
 if __name__ == "__main__":
-    runner = BacktestRunner(steps=10_000, phase=1)
+    runner = BacktestRunner(steps=50_000, phase=1)
     simulator = runner.run_simulation()
     runner.analyze_and_plot(simulator)

@@ -20,7 +20,6 @@ from config import (
     MARKET_MAKER_LATENCY_B, MARKET_MAKER_LATENCY_C, MARKET_MAKER_DELTA_TAU,
     MARKET_MAKER_HEDGE_THRESHOLD, MARKET_MAKER_EPSILON,
     MARKET_MAKER_AGGREGATION_STEPS, INVENTORY_REGIME_NORMAL_THRESHOLD,
-    INVENTORY_REGIME_ALERT_THRESHOLD,
     MARKET_MAKER_DEFAULT_QUOTE_PHASE,
     MARKET_MAKER_PHASE3_HEDGE_LEG_TRIGGER,
     MM_PHASE3_LATENCY_SAFETY_BUFFER_PIPS,
@@ -331,6 +330,8 @@ class MarketMaker:
         self._qty_filled_bid = 0.0
         self._qty_filled_ask = 0.0
         self._spread_capture_accum = 0.0
+        self._hft_snipe_count_accum = 0
+        self._hft_snipe_qty_accum = 0.0
         # (price, qty, is_ask, mid_at_fill) — mid capturé au moment du fill
         self._mm_fills_buffer: list[tuple[float, float, bool, float]] = []
         self._long_lots: deque[tuple[float, float]] = deque()   # (qty, price)
@@ -795,7 +796,7 @@ class MarketMaker:
         inv_pct = float(max(0.0, min(1.0, inv_pct_raw)))
         if inv_pct < INVENTORY_REGIME_NORMAL_THRESHOLD:
             regime = "Normal"
-        elif inv_pct < INVENTORY_REGIME_ALERT_THRESHOLD:
+        elif inv_pct < MARKET_MAKER_HEDGE_THRESHOLD:
             regime = "Alert"
         else:
             regime = "Hedge"
@@ -814,6 +815,9 @@ class MarketMaker:
         self._metrics_rt_rows.append(row_rt)
 
         # 6. ENREGISTREMENT AGGREGATED (Tous les 100 steps)
+        self._hft_snipe_count_accum += int(hft_snipe_count)
+        self._hft_snipe_qty_accum += float(hft_snipe_qty)
+
         for price, qty, is_ask, fill_mid in self._mm_fills_buffer:
             if not is_ask:
                 self._qty_filled_bid += qty
@@ -883,12 +887,14 @@ class MarketMaker:
                 "fill_rate_bid": float(fill_rate_bid),     
                 "fill_rate_ask": float(fill_rate_ask),     
                 "spread_capture_pips": float(spread_cap),
-                "hft_snipe_count": int(hft_snipe_count),
-                "hft_snipe_qty": float(hft_snipe_qty),
-                "arb_opportunity_count": int(hft_snipe_count),
-                "arb_opportunity_size": float(hft_snipe_qty),
+                "hft_snipe_count": int(self._hft_snipe_count_accum),
+                "hft_snipe_qty": float(self._hft_snipe_qty_accum),
+                "arb_opportunity_count": int(self._hft_snipe_count_accum),
+                "arb_opportunity_size": float(self._hft_snipe_qty_accum),
             }
             self._metrics_agg_rows.append(row_agg)
+            self._hft_snipe_count_accum = 0
+            self._hft_snipe_qty_accum = 0.0
 
     def compute_summary_stats(self) -> pl.DataFrame:
         """

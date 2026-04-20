@@ -229,7 +229,7 @@ if __name__ == "__main__":
     sim = EURUSDPriceSimulator(s0=1.15, dt_seconds=dt, seed=13)
 
     t0 = time.perf_counter()
-    sim.generate_prices(100_000)
+    sim.generate_prices(8_640_000)
     t1 = time.perf_counter()
 
     print(f"Simulated 24 hours in {t1 - t0:.3f} seconds")

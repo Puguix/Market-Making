@@ -25,12 +25,10 @@ MARKET_MAKER_WEIGHT_C = 0.25  # Weight of venue C in fair-value estimation.
 MARKET_MAKER_LATENCY_B = 0.200  # Assumed decision latency for venue B data (seconds).
 MARKET_MAKER_LATENCY_C = 0.170  # Assumed decision latency for venue C data (seconds).
 MARKET_MAKER_DELTA_TAU = 0.150  # Time horizon used in MM quote adjustment logic.
+INVENTORY_REGIME_NORMAL_THRESHOLD = 0.75  # Inventory ratio boundary for normal regime.
 MARKET_MAKER_HEDGE_THRESHOLD = 0.90  # Inventory ratio where hedging behavior is triggered.
 MARKET_MAKER_EPSILON = 0.00005  # Small numerical floor used in MM stability checks.
 MARKET_MAKER_AGGREGATION_STEPS = 100  # Steps per aggregation window for metrics/features.
-INVENTORY_REGIME_NORMAL_THRESHOLD = 0.75  # Inventory ratio boundary for normal regime.
-INVENTORY_REGIME_ALERT_THRESHOLD = 0.90  # Inventory ratio boundary for alert regime.
-# MM quoting: 1 = classic A–S grid at reservation (no depth/buffer skew). 3 = plan_phase3 (HFT-aware).
 MARKET_MAKER_DEFAULT_QUOTE_PHASE = 3  # Default quoting mode used by the market maker.
 
 # Phase 3 — fallback MM on A (behind HFT, latency buffer, stress / wide-spread reaction)
@@ -119,15 +117,6 @@ ORDERBOOK_ADVANCED_TEST_DT = 0.01  # Time increment for advanced order book test
 ORDERBOOK_ADVANCED_TEST_DRIFT_SCALE = 0.00001  # Drift magnitude applied in advanced tests.
 ORDERBOOK_ADVANCED_TEST_BOOK_DEPTH = 10  # Effective displayed depth for advanced tests.
 
-# Smoke test constants
-SMOKE_TEST_N_LEVELS = 5  # Number of levels used in smoke-test books.
-SMOKE_TEST_STEPS = 100  # Number of iterations for smoke tests.
-SMOKE_TEST_SEED = 42  # Random seed used for smoke tests.
-SMOKE_TEST_MM_SIGMA = 8.33e-6  # Volatility parameter used in smoke-test MM setup.
-SMOKE_TEST_MM_KAPPA = 80_000  # Liquidity parameter used in smoke-test MM setup.
-SMOKE_TEST_MM_HORIZON = 24 * 3600  # Trading horizon in smoke tests (seconds).
-SMOKE_TEST_MM_Q_MAX = 1_000_000.0  # Max inventory bound for smoke-test MM.
-
 # OrderBook constants
 LAMBDA_A0_B = 5.0  # Baseline limit-order arrival intensity on venue B.
 ALPHA_B = 0.05  # Distance-decay coefficient for venue B arrivals.
@@ -155,7 +144,7 @@ PRICE_SIM_DEFAULT_BAR_SIGMA_PIPS = 5.0  # Intraday diffusion volatility (pips).
 PRICE_SIM_DEFAULT_LAMBDA_JUMP_PER_DAY = 4.0  # Expected number of jump events per day.
 PRICE_SIM_DEFAULT_SIGMA_JUMP_PIPS = 7.5  # Jump-size volatility (pips).
 PRICE_SIM_DEFAULT_RHO_EPS = 0.9  # Correlation of venue-specific micro-noise shocks.
-PRICE_SIM_DEFAULT_SIGMA_EPS_PIPS = 0.6  # Noise scale on venues B and C (pips).
+PRICE_SIM_DEFAULT_SIGMA_EPS_PIPS = 0.3  # Noise scale on venues B and C (pips).
 SECONDS_PER_HOUR = 3600.0  # Seconds in one hour.
 HOURS_PER_DAY = 24.0  # Hours in one day.
 SECONDS_PER_DAY = 86_400  # Seconds in one day.

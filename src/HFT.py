@@ -258,6 +258,6 @@ def test_making() -> None:
 
 
 if __name__ == "__main__":
-    test_snipe()
+    # test_snipe()
     print()
-    # test_making()
+    test_making()

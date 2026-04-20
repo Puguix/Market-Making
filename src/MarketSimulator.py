@@ -355,15 +355,16 @@ class MarketSimulator:
             self.order_books_B[(self.current_idx_B - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_B_SIZE],
             self.order_books_C[(self.current_idx_C - SIMULATOR_HFT_LOOKBACK_STEPS) % SIMULATOR_BUFFER_C_SIZE]
         )
+        # add_market_order_from_LO mutates aggressor.quantity (remaining qty).
+        # Snapshot intended size before execution for accurate metrics.
+        hft_snipe_count = len(orders_A)
+        hft_snipe_qty = sum(o.quantity for o in orders_A)
 
         for order_A in orders_A:
             order_fills = self.order_book_A.add_market_order_from_LO(order_A)
             hft_fills_A.extend(order_fills)
         fills.extend(hft_fills_A)
         self.market_maker.update_inventory_from_fills(hft_fills_A, mid_ref=_true_mid)
-
-        hft_snipe_count = len(orders_A)
-        hft_snipe_qty = sum(o.quantity for o in orders_A)
 
         for order_B in orders_B:
             self.order_books_B[self.current_idx_B].add_market_order_from_LO(order_B)

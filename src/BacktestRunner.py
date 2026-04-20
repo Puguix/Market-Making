@@ -429,6 +429,6 @@ class BacktestRunner:
     
 
 if __name__ == "__main__":
-    runner = BacktestRunner(steps=50_000, phase=3)
-    simulator = runner.run_simulation(seed=13)
+    runner = BacktestRunner(steps=20_000, phase=1)
+    simulator = runner.run_simulation(seed=42)
     runner.analyze_and_plot(simulator)

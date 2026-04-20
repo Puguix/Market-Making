@@ -323,12 +323,9 @@ class MarketMaker:
         self._qty_exposed_ask = 0.0
         self._qty_filled_bid = 0.0
         self._qty_filled_ask = 0.0
+        self._spread_capture_accum = 0.0
         self._long_lots: deque[tuple[float, float]] = deque()   # (qty, price)
         self._short_lots: deque[tuple[float, float]] = deque()  # (qty, price)
-        if self.EUR_quantity > 0:
-            self._long_lots.append((float(self.EUR_quantity), float(self.s0)))
-        elif self.EUR_quantity < 0:
-            self._short_lots.append((float(-self.EUR_quantity), float(self.s0)))
 
         # Orders
         self._active_orders: dict[str, list[tuple[str, float]]] = {}  # "bid_1.0850" -> [("MM_42", 300_000), ("MM_87", 150_000)]
@@ -760,10 +757,15 @@ class MarketMaker:
 
         # 4. RÉGIME D'INVENTAIRE
         v_tot_metrics = self.EUR_quantity * mid_ref + self.USD_quantity
-        target_eur_metrics = (0.5 * v_tot_metrics) / mid_ref
-        dev = abs(self.EUR_quantity - target_eur_metrics)
-        max_dev = (self.hedge_threshold - 0.5) * v_tot_metrics / mid_ref
-        inv_pct = float(dev / max_dev) if max_dev > 0 else 0.0
+        eur_value_metrics = self.EUR_quantity * mid_ref
+        usd_value_metrics = self.USD_quantity
+        leg_share = max(eur_value_metrics, usd_value_metrics) / v_tot_metrics if v_tot_metrics > 0 else 0.0
+        inv_pct_raw = (
+            (leg_share - 0.5) / (self.hedge_leg_trigger - 0.5)
+            if self.hedge_leg_trigger > 0.5
+            else 0.0
+        )
+        inv_pct = float(max(0.0, min(1.0, inv_pct_raw)))
         if inv_pct < INVENTORY_REGIME_NORMAL_THRESHOLD:
             regime = "Normal"
         elif inv_pct < INVENTORY_REGIME_ALERT_THRESHOLD:
@@ -788,6 +790,7 @@ class MarketMaker:
         mm_fills = [f for f in fills if f[0].order_id.startswith("MM_")]
         self._qty_filled_bid += sum(f[1] for f in mm_fills if not f[0].is_ask)
         self._qty_filled_ask += sum(f[1] for f in mm_fills if f[0].is_ask)
+        self._spread_capture_accum += sum(abs(f[0].price - mid_ref) * f[1] for f in mm_fills)
 
         if self._step_count % MARKET_MAKER_AGGREGATION_STEPS == 0:
             # On recrée le problème d'utilité pour avoir reservation_price et optimal_spread
@@ -804,8 +807,8 @@ class MarketMaker:
             a_price = float(a_price) if a_price is not None else 0.0
             # --------------------------------------------
 
-            total_qty = sum(f[1] for f in mm_fills)
-            spread_cap = sum(abs(f[0].price - mid_ref) * f[1] for f in mm_fills) / total_qty if total_qty > 0 else 0.0
+            total_qty_window = self._qty_filled_bid + self._qty_filled_ask
+            spread_cap = self._spread_capture_accum / total_qty_window if total_qty_window > 0 else 0.0
 
             # fill_rate : qty fillée / qty exposée (top of book) sur la fenêtre agrégée
             fill_rate_bid = (
@@ -821,6 +824,7 @@ class MarketMaker:
             self._qty_exposed_ask = 0.0
             self._qty_filled_bid = 0.0
             self._qty_filled_ask = 0.0
+            self._spread_capture_accum = 0.0
 
             row_agg = {
                 "timestamp": float(timestamp),
@@ -965,10 +969,17 @@ class MarketMaker:
         if max(eur_value, usd_value) < self.hedge_leg_trigger * v_tot:
             return None, None
 
-        # Rebalance target: 50% of total capital in EUR (same ref as quoting)
-        target_eur_qty = (0.5 * v_tot) / mid_ref
+        # Hedge direction from current skew vs 50/50 split.
+        target_eur_neutral_qty = (0.5 * v_tot) / mid_ref
+        is_ask = self.EUR_quantity > target_eur_neutral_qty
 
-        is_ask = self.EUR_quantity > target_eur_qty
+        # De-risk to inventory alert band (not all the way to 50/50),
+        # so inventory unwinds progressively instead of dropping to zero instantly.
+        alert_leg_share = INVENTORY_REGIME_NORMAL_THRESHOLD
+        if is_ask:
+            target_eur_qty = (alert_leg_share * v_tot) / mid_ref
+        else:
+            target_eur_qty = ((1.0 - alert_leg_share) * v_tot) / mid_ref
         hedge_qty_eur = abs(self.EUR_quantity - target_eur_qty)
 
         # Best prices and available quantities on each venue

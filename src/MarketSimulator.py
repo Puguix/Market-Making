@@ -534,15 +534,4 @@ class MarketSimulator:
                 "Is Ask": t["is_ask"]
             })
         return clean_trades
-
-
-if __name__ == "__main__":
-    OB_A = OrderBook(lambda_a0=LAMBDA_A0_A, alpha=ALPHA_A, theta=THETA_A, lambda_mo=LAMBDA_MO_A, v_unit=V_UNIT_A)
-    OB_B = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
-    OB_C = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B)
-    MM = MarketMaker(EUR_quantity=500_000, USD_quantity=500_000, gamma=BACKTEST_MM_GAMMA, sigma=BACKTEST_MM_SIGMA, kappa=BACKTEST_MM_KAPPA, T=1, s0=1.08500)
-    PS = EURUSDPriceSimulator(s0=1.15, dt_seconds=PRICE_SIM_DEFAULT_DT_SECONDS)
-    HFT = HFT()
-    SIM = MarketSimulator(OB_A, OB_B, OB_C, MM, PS, HFT)
-    SIM.simulate_200ms_history()
-    # SIM.simulate_one_day()
+        

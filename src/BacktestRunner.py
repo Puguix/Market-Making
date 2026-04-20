@@ -5,10 +5,11 @@ import polars as pl
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+import math
 
 # Import de tes classes existantes
 from OrderBook import OrderBook, Order
-from MarketMaker import MarketMaker, PARQUET_PATH_AGGREGATED, PARQUET_PATH_REALTIME
+from MarketMaker import MarketMaker, PARQUET_PATH_AGGREGATED, PARQUET_PATH_REALTIME, PARQUET_PATH_FILLS_LOG
 from EURUSDPriceSimulator import EURUSDPriceSimulator
 from MarketSimulator import MarketSimulator
 from HFT import HFT
@@ -31,9 +32,20 @@ from config import (
     HOURS_PER_DAY,
 )
 
+import subprocess
+import sys
+
+def _open_file(path: str) -> None:
+    """Ouvre un fichier avec le visualiseur par défaut (Mac, Windows, Linux)."""
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    elif sys.platform == "win32":
+        os.startfile(path)
+    else:
+        subprocess.Popen(["xdg-open", path])
+
 # Mandatory comment as per instructions:
 # This implementation follows a heuristic-first market making approach under latency constraints.
-
 class BacktestRunner:
     def __init__(
         self,
@@ -54,7 +66,7 @@ class BacktestRunner:
 
     def _cleanup(self):
         """Supprime les anciens fichiers pour repartir à neuf."""
-        for p in [PARQUET_PATH_REALTIME, PARQUET_PATH_AGGREGATED]:
+        for p in [PARQUET_PATH_REALTIME, PARQUET_PATH_AGGREGATED, PARQUET_PATH_FILLS_LOG]:
             if os.path.exists(p):
                 os.remove(p)
                 print(f">>> Nettoyage : {os.path.basename(p)} supprimé.")
@@ -110,6 +122,130 @@ class BacktestRunner:
         print(">>> Simulation terminée. Analyse des données...")
         return sim
 
+    def _generate_mtm_aging(self, ax, df_rt: pl.DataFrame) -> None:
+        """
+        Compute and plot MtM P&L as a function of time since trade inception.
+        Reads fills_log.parquet, joins asof with df_rt on mid_ref, aggregates by horizon.
+        """
+        from config import PARQUET_PATH_FILLS_LOG
+
+        if not os.path.exists(PARQUET_PATH_FILLS_LOG):
+            ax.axis('off')
+            ax.text(0.5, 0.5, "fills_log.parquet introuvable", ha='center', va='center')
+            return
+
+        df_fills = pl.read_parquet(PARQUET_PATH_FILLS_LOG)
+        if len(df_fills) == 0:
+            ax.axis('off')
+            ax.text(0.5, 0.5, "Aucun fill enregistré", ha='center', va='center')
+            return
+
+        df_rt_ts = df_rt.select(["timestamp", "mid_ref"]).sort("timestamp")
+        horizons_steps = [0, 2, 5, 10, 20, 50, 100]
+
+        dt = self.dt
+
+        # Explode : une ligne par (fill, horizon)
+        rows = []
+        for h in horizons_steps:
+            tmp = df_fills.with_columns([
+                pl.lit(h).alias("horizon_steps"),
+                (pl.col("timestamp_fill") + h * dt).alias("horizon_timestamp"),
+                # bid=+1 (on a acheté, on gagne si mid monte), ask=-1
+                ((pl.col("is_ask").cast(pl.Int8) * -2) + 1).cast(pl.Float64).alias("sign"),
+            ])
+            rows.append(tmp)
+
+        df_exploded = pl.concat(rows).sort("horizon_timestamp")
+
+        # join_asof : mid_ref le plus proche au timestamp horizon
+        df_joined = df_exploded.join_asof(
+            df_rt_ts,
+            left_on="horizon_timestamp",
+            right_on="timestamp",
+            strategy="nearest",
+        )
+
+        # MtM en pips par unité
+        df_joined = df_joined.with_columns([
+            ((pl.col("mid_ref") - pl.col("fill_price")) * pl.col("sign") * 10_000).alias("mtm_pips"),
+        ])
+
+        # Agrégation par horizon
+        df_agg = df_joined.group_by("horizon_steps").agg([
+            pl.col("mtm_pips").mean().alias("mean"),
+            pl.col("mtm_pips").median().alias("median"),
+            pl.col("mtm_pips").quantile(0.05).alias("p5"),
+            pl.col("mtm_pips").quantile(0.95).alias("p95"),
+        ]).sort("horizon_steps")
+
+        x = df_agg["horizon_steps"].to_numpy() * dt * 1000  # ms
+        ax.plot(x, df_agg["mean"].to_numpy(), label="Mean", color="#1f77b4", linewidth=2)
+        ax.plot(x, df_agg["median"].to_numpy(), label="Median", color="#ff7f0e", linewidth=2, linestyle="--")
+        ax.fill_between(x, df_agg["p5"].to_numpy(), df_agg["p95"].to_numpy(), alpha=0.2, color="#1f77b4", label="P5–P95")
+        ax.axhline(0, color='black', linewidth=0.8, linestyle='--')
+        ax.set_xlabel("Time since trade inception (ms)")
+        ax.set_ylabel("MtM P&L (pips / unit)")
+        ax.set_title("MtM P&L as a Function of Time Since Trade Inception", fontsize=14, fontweight='bold')
+        ax.legend()
+
+    def _generate_tables_report(self, sim) -> None:
+        fig = plt.figure(figsize=(14, 10))
+        fig.patch.set_facecolor('white')
+
+        # --- Stats table ---
+        ax1 = fig.add_axes([0.02, 0.55, 0.96, 0.38])  # [left, bottom, width, height]
+        ax1.axis('off')
+        fig.text(0.5, 0.95, "Summary Statistics", ha='center', va='top',
+                fontsize=13, fontweight='bold')
+
+        stats = sim.market_maker.compute_summary_stats()
+        if not stats.is_empty():
+            n = len(stats.columns)
+            mid = math.ceil(n / 2)
+            col1 = [(col, stats[col][0]) for col in stats.columns[:mid]]
+            col2 = [(col, stats[col][0]) for col in stats.columns[mid:]]
+            while len(col2) < len(col1):
+                col2.append(("", ""))
+            fmt = lambda v: f"{v:.4f}" if isinstance(v, float) else str(v)
+            cell_text = [[k1, fmt(v1), k2, fmt(v2)] for (k1, v1), (k2, v2) in zip(col1, col2)]
+            tbl = ax1.table(
+                cellText=cell_text,
+                colLabels=["Métrique", "Valeur", "Métrique", "Valeur"],
+                loc='center', cellLoc='left',
+                colWidths=[0.3, 0.2, 0.3, 0.2],
+            )
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(10)
+            tbl.scale(1.0, 2.0)
+
+        # --- Top 10 trades table ---
+        ax2 = fig.add_axes([0.15, 0.02, 0.70, 0.45])
+        ax2.axis('off')
+        fig.text(0.5, 0.50, "Top 10 Trades by Size (Exchange A)", ha='center', va='top',
+                fontsize=13, fontweight='bold')
+
+        top_trades = sim.get_top_trades(10)
+        if top_trades:
+            cell_text = []
+            for i, t in enumerate(top_trades, 1):
+                side = "ASK (sell)" if t["Is Ask"] else "BID (buy)"
+                cell_text.append([str(i), f"{t['price']:.5f}", f"{t['quantity']:,.0f}", side])
+            tbl2 = ax2.table(
+                cellText=cell_text,
+                colLabels=["Rank", "Price", "Quantity (EUR)", "Side"],
+                loc='center', cellLoc='center',
+                colWidths=[0.08, 0.25, 0.25, 0.25],
+            )
+            tbl2.auto_set_font_size(False)
+            tbl2.set_fontsize(10)
+            tbl2.scale(1.0, 2.0)
+
+        tables_path = BACKTEST_REPORT_PATH.replace(".png", "_tables.png")
+        plt.savefig(tables_path, dpi=PLOT_DPI)
+        print(f">>> Tables sauvegardées sous '{tables_path}'")
+        plt.close('all')
+
     def analyze_and_plot(self, sim):
         path_rt = PARQUET_PATH_REALTIME
         path_agg = PARQUET_PATH_AGGREGATED
@@ -123,7 +259,8 @@ class BacktestRunner:
         df_agg = pl.read_parquet(path_agg)
 
         fig = plt.figure(figsize=PLOT_FIGSIZE)
-        gs = fig.add_gridspec(5, PLOT_GRIDSPEC_COLS)
+        gs = fig.add_gridspec(4, 2, hspace=0.45, wspace=0.35,
+              top=0.97, bottom=0.03, left=0.06, right=0.97)
 
         # --- GRAPH 1: PnL Evolution ---
         ax1 = fig.add_subplot(gs[0, 0])
@@ -132,7 +269,7 @@ class BacktestRunner:
         ax1.set_title("Evolution du PnL Total (USD)", fontsize=14, fontweight='bold')
         ax1.set_ylabel("PnL ($)")
 
-        # --- GRAPH 2: Inventory & Skew ---
+        # --- GRAPH 2: Inventory ---
         ax2 = fig.add_subplot(gs[0, 1])
         inventory_value_usd = df_rt["EUR_quantity"] * df_rt["mid_ref"] + df_rt["USD_quantity"]
         eur_share_pct = 100 * (df_rt["EUR_quantity"] * df_rt["mid_ref"]) / inventory_value_usd
@@ -143,7 +280,7 @@ class BacktestRunner:
         ax2.axhline(INVENTORY_HEDGE_HIGH_LINE_PCT, color='red', linestyle='--', alpha=0.8, label="Hedge High (90%)")
         ax2.set_title("Part EUR dans la Valeur d'Inventaire (%)", fontsize=14, fontweight='bold')
         ax2.set_ylim(0, INVENTORY_YMAX_PCT)
-        ax2.legend()
+        ax2.legend(fontsize=7, loc='upper left', bbox_to_anchor=(1.01, 1), borderaxespad=0)
 
         # --- GRAPH 3: Price & Reservation Price ---
         ax3 = fig.add_subplot(gs[1, 0])
@@ -156,7 +293,7 @@ class BacktestRunner:
         ax3.set_title("Mid Price vs Reservation Price (Inventory Skew)", fontsize=14, fontweight='bold')
         ax3.legend()
 
-        # --- GRAPH 4: Quoted Spread vs Sniping ---
+        # --- GRAPH 4: Spread ---
         ax4 = fig.add_subplot(gs[1, 1])
         spread_b = (df_agg["best_ask_B"] - df_agg["best_bid_B"]) * PIPS_MULTIPLIER
         ax4.plot(df_agg["timestamp"], df_agg["spread_quoted"] * PIPS_MULTIPLIER, label="Spread A (pips)", color="green")
@@ -167,7 +304,8 @@ class BacktestRunner:
 
         # --- GRAPH 5: Sniping Activity ---
         ax5 = fig.add_subplot(gs[2, 0])
-        ax5.scatter(df_agg["timestamp"], df_agg["hft_snipe_count"], s=df_agg["hft_snipe_qty"] / HFT_MARKER_SIZE_DIVISOR,
+        ax5.scatter(df_agg["timestamp"], df_agg["hft_snipe_count"],
+                    s=df_agg["hft_snipe_qty"] / HFT_MARKER_SIZE_DIVISOR,
                     alpha=0.5, c="red", label="HFT Snipes")
         ax5.set_title("Activité de Sniping HFT (Taille = Volume)", fontsize=14, fontweight='bold')
         ax5.set_ylabel("Nombre d'attaques")
@@ -179,53 +317,24 @@ class BacktestRunner:
         ax6.set_title("Taux d'exécution moyen (Fill Rates)", fontsize=14, fontweight='bold')
         ax6.set_ylim(0, max(avg_fills) * FILL_RATE_YMAX_MULTIPLIER if any(avg_fills) else FALLBACK_FILL_RATE_YMAX)
 
-        # --- TABLEAU DE STATS (Bas du graph) ---
-        ax_table = fig.add_subplot(gs[3, :])
-        ax_table.axis('off')
-        
-        stats = sim.market_maker.compute_summary_stats()
-        if not stats.is_empty():
-            cell_text = []
-            for col in stats.columns:
-                val = stats[col][0]
-                if isinstance(val, float): cell_text.append([col, f"{val:.4f}"])
-                else: cell_text.append([col, str(val)])
-            
-            the_table = ax_table.table(cellText=cell_text, colLabels=["Métrique", "Valeur"], 
-                                      loc='center', cellLoc='left')
-            the_table.auto_set_font_size(False)
-            the_table.set_fontsize(TABLE_FONT_SIZE)
-            the_table.scale(TABLE_SCALE_X, TABLE_SCALE_Y)
-        # --- GRAPH 7: Top 10 trades by size ---
-        ax7 = fig.add_subplot(gs[4, :])
-        ax7.axis('off')
-
-        top_trades = sim.get_top_trades(10)
-        if top_trades:
-            trade_cell_text = []
-            for i, t in enumerate(top_trades, 1):
-                side = "ASK (sell)" if t["Is Ask"] else "BID (buy)"
-                trade_cell_text.append([
-                    str(i),
-                    f"{t['price']:.5f}",
-                    f"{t['quantity']:,.0f}",
-                    side,
-                ])
-            trade_table = ax7.table(
-                cellText=trade_cell_text,
-                colLabels=["Rank", "Price", "Quantity (EUR)", "Side"],
-                loc='center',
-                cellLoc='center',
-            )
-            trade_table.auto_set_font_size(False)
-            trade_table.set_fontsize(TABLE_FONT_SIZE)
-            trade_table.scale(TABLE_SCALE_X, TABLE_SCALE_Y)
-            ax7.set_title("Top 10 Trades by Size (Exchange A)", fontsize=14, fontweight='bold', pad=20)
+        # --- GRAPH 7: MtM aging ---
+        ax7 = fig.add_subplot(gs[3, :])
+        self._generate_mtm_aging(ax7, df_rt)
 
         plt.tight_layout()
-        plt.savefig(BACKTEST_REPORT_PATH, dpi=PLOT_DPI)
-        print(">>> Rapport sauvegardé sous 'full_backtest_report.png'")
-        plt.show()
+        plt.savefig(BACKTEST_REPORT_PATH, dpi=PLOT_DPI, bbox_inches='tight')
+        print(f">>> Rapport graphs sauvegardé sous '{BACKTEST_REPORT_PATH}'")
+        plt.close('all')  
+
+        # --- Fichier séparé pour les tables ---
+        self._generate_tables_report(sim)
+
+        # Ouvre les deux fichiers PNG automatiquement
+        import subprocess
+        tables_path = BACKTEST_REPORT_PATH.replace(".png", "_tables.png")
+        _open_file(BACKTEST_REPORT_PATH)
+        _open_file(tables_path)
+
 
     def run_simulation_with_params(
         self,
@@ -320,6 +429,6 @@ class BacktestRunner:
     
 
 if __name__ == "__main__":
-    runner = BacktestRunner(steps=5_000, phase=3)
+    runner = BacktestRunner(steps=50_000, phase=3)
     simulator = runner.run_simulation(seed=13)
     runner.analyze_and_plot(simulator)

@@ -330,7 +330,7 @@ class MarketSimulator:
         self.simulate_order_book_evolution()
         self.current_idx_B = (self.current_idx_B + 1) % SIMULATOR_BUFFER_B_SIZE
         self.current_idx_C = (self.current_idx_C + 1) % SIMULATOR_BUFFER_C_SIZE
-        # Calculer le mid instantané B/C (sans lag) — référence externe pour spread capture
+        # Calculer le mid instantané B/C (sans lag) — external ref pour spread capture
         _ob_b_now = self.order_books_B[self.current_idx_B]
         _ob_c_now = self.order_books_C[self.current_idx_C]
         _mid_b_now = _ob_b_now.mid if _ob_b_now is not None and _ob_b_now.mid is not None else self.market_maker.s0

@@ -93,7 +93,7 @@ class EURUSDPriceSimulator:
         corresponds to hour 24*k/n_steps (e.g. k=n_steps/3 -> 8h, k=n_steps/2 -> 12h).
         """
 
-        # One trading day spread over n_steps: each step is 24h/n_steps for σ, jumps, and micro-noise
+        # One trading day spread over n_steps: each step is 24h/n_steps for sigma, jumps, and micro-noise
         dt_h = HOURS_PER_DAY / float(n_steps)
         dt_h_ref = self.dt_seconds / SECONDS_PER_HOUR
         eps_scale = np.sqrt(dt_h / dt_h_ref)
@@ -102,7 +102,7 @@ class EURUSDPriceSimulator:
         idx = np.arange(1, n_steps + 1, dtype=float)
         t_hours = (self._t_seconds / SECONDS_PER_HOUR) + HOURS_PER_DAY * (idx / float(n_steps))
 
-        # Intraday seasonal activity φ(t) as in _session_activity, but vectorised
+        # Intraday seasonal activity phi(t) as in _session_activity, but vectorised
         h = np.mod(t_hours, HOURS_PER_DAY)
         phi = np.full_like(h, OVERNIGHT_ACTIVITY)  # Overnight baseline
         mask_tokyo = (h >= 0.0) & (h < 8.0)
@@ -138,7 +138,7 @@ class EURUSDPriceSimulator:
         innovations_B = self._sigma_eps_pips  * self._rng.standard_normal(n_steps)
         innovations_C = self._sigma_eps_pips  * self._rng.standard_normal(n_steps)
 
-        # Vectorized AR(1): eps_t = rho * eps_{t-1} + innovation_t
+        # Vectorized AR(1): eps_t = rho * epsilon_{t-1} + innovation_t
         rho = self._rho_eps
         noise_B_pips = lfilter([1], [1, -rho], innovations_B, zi=[self._eps_B])[0]
         noise_C_pips = lfilter([1], [1, -rho], innovations_C, zi=[self._eps_C])[0]
@@ -234,7 +234,7 @@ if __name__ == "__main__":
 
     print(f"Simulated 24 hours in {t1 - t0:.3f} seconds")
 
-    # Extract full mid-price paths from the FIFO without extra stepping
+    # Extract full mid-price paths from the fIFO without extra stepping
     base_prices = list(sim._base_mid)
     b_prices = list(sim._mid_B)
     c_prices = list(sim._mid_C)
@@ -251,7 +251,7 @@ if __name__ == "__main__":
 
     fig, axes = plt.subplots(2, 1, figsize=(11, 8))
 
-    # Graph 1: Time series of base mid price (on top)
+    # Graph 1:base mid price (on top)
     ax0 = axes[0]
     ax0.plot(time_axis_hours, base_prices, label="Base mid-price", color="navy", linewidth=1.2)
     ax0.set_xlabel("Time (hours)")
@@ -260,7 +260,7 @@ if __name__ == "__main__":
     ax0.grid(True, alpha=0.3)
     ax0.legend()
 
-    # Graph 2: Histogram (bar chart) of the B-C price difference (below)
+    # Graph 2: Histo of the B-C price dif
     ax1 = axes[1]
     ax1.bar(
         bin_centers,

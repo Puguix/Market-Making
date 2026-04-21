@@ -170,7 +170,6 @@ class GeometricQuantityGridStrategy(QuantityGridStrategy):
 
         bids, asks = [], []
 
-        # inventory_max is in USD notional; inventory is EUR (base). Compare in same units.
         inv_notional_usd = abs(problem.inventory) * problem.ref_price
         headroom = max(0.0, problem.inventory_max - inv_notional_usd)
         normalization = (1 - self.alpha) / (1 - (self.alpha ** self.max_levels))
@@ -332,7 +331,7 @@ class MarketMaker:
         self._spread_capture_accum = 0.0
         self._hft_snipe_count_accum = 0
         self._hft_snipe_qty_accum = 0.0
-        # (price, qty, is_ask, mid_at_fill) — mid capturé au moment du fill
+        
         self._mm_fills_buffer: list[tuple[float, float, bool, float]] = []
         self._long_lots: deque[tuple[float, float]] = deque()   # (qty, price)
         self._short_lots: deque[tuple[float, float]] = deque()  # (qty, price)
@@ -344,7 +343,7 @@ class MarketMaker:
         self._has_new_fills: bool = False
         self._ema_spread_A: Optional[float] = None
         self.epsilon: float = MARKET_MAKER_EPSILON  # 0.5 pip
-        # Elapsed strategy time (seconds); drives (T - t) in Avellaneda–Stoikov.
+        # time passed 
         self._t = 0.0
 
         self._metrics_rt_rows: list[dict] = []
@@ -759,7 +758,7 @@ class MarketMaker:
         hft_snipe_count: int,
         hft_snipe_qty: float,
     ):
-        # 1. CALCUL DU PRIX DE RÉFÉRENCE (VWAP B/C) - La "Fair Value"
+        # CALCUL DU PRIX DE REF (VWAP B/C)
         m_B = getattr(order_book_B, 'mid', None)
         m_C = getattr(order_book_C, 'mid', None)
 
@@ -775,15 +774,15 @@ class MarketMaker:
         mid_ref = float(mid_ref)
         self._last_mid_ref = mid_ref
 
-        # 2. RÉCUPÉRATION DU MID LOCAL DE A (Pour le display)
+        # RECUP MID LOCAL DE A (Pour le display)
         m_A = getattr(order_book_A, 'mid', None)
         mid_A_display = float(m_A) if m_A is not None else mid_ref
 
-        # 3. CALCUL DU PNL MtM (Basé sur mid_ref pour éviter les sauts)
+        # CALCUL PNL MtM
         self._step_count += 1
         mtm_pnl = float(self.EUR_quantity * mid_ref + self.USD_quantity - self._initial_capital)
 
-        # 4. RÉGIME D'INVENTAIRE
+        # RÉGIME D'INVENTAIRE
         v_tot_metrics = self.EUR_quantity * mid_ref + self.USD_quantity
         eur_value_metrics = self.EUR_quantity * mid_ref
         usd_value_metrics = self.USD_quantity
@@ -801,7 +800,7 @@ class MarketMaker:
         else:
             regime = "Hedge"
 
-        # 5. ENREGISTREMENT REALTIME (Chaque step)
+        # ENREGISTREMENT REALTIME (Chaque step)
         row_rt = {
             "timestamp": float(timestamp),
             "mid_A": float(mid_A_display),
@@ -814,7 +813,7 @@ class MarketMaker:
         }
         self._metrics_rt_rows.append(row_rt)
 
-        # 6. ENREGISTREMENT AGGREGATED (Tous les 100 steps)
+        # ENREGISTREMENT AGGREGATED (Tous les 100 steps)
         self._hft_snipe_count_accum += int(hft_snipe_count)
         self._hft_snipe_qty_accum += float(hft_snipe_qty)
 
@@ -839,7 +838,7 @@ class MarketMaker:
             
             a_price, _ = getattr(order_book_A, 'best_ask', (None, 0.0))
             a_price = float(a_price) if a_price is not None else 0.0
-            # --------------------------------------------
+            # ----------------------------------------------
 
             total_qty_window = self._qty_filled_bid + self._qty_filled_ask
             spread_cap = (

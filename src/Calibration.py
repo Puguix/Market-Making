@@ -27,6 +27,10 @@ def logging_callback(study: optuna.Study, trial: FrozenTrial):
 
 def check_constraints(df_agg: pl.DataFrame, params: dict) -> list[float]:
 
+    """
+    Enter all constraints here as functions of df_agg and params.
+    """
+
     # list of constraints
     constraints = []
 
@@ -47,9 +51,6 @@ def objective(trial: optuna.Trial) -> float:
     # --- PARMAS GRIS ---
     gamma         = trial.suggest_float("gamma", 0.01, 0.5, log=True)
     kappa         = trial.suggest_float("kappa", 10_000.0, 500_000.0, log=True)
-    # delta_grid    = trial.suggest_float("delta_grid", 0.00005, 0.0005)
-    # geo_increment = trial.suggest_float("geo_increment", 1.1, 2.5)
-    # qty_alpha     = trial.suggest_float("qty_alpha", 0.4, 0.9)
     # --------------------
 
     # Run Simulation
@@ -66,9 +67,6 @@ def objective(trial: optuna.Trial) -> float:
             delta_grid=DEFAULT_TICK_SIZE,
             geo_increment=DEFAULT_GEO_INCREMENT,
             qty_alpha=DEFAULT_GEO_QTY_ALPHA,
-            # delta_grid=delta_grid,
-            # geo_increment=geo_increment,
-            # qty_alpha=qty_alpha,
         )
     except Exception as e:
         # Fail to converge
@@ -113,36 +111,26 @@ if __name__ == "__main__":
 
     sampler = optuna.samplers.TPESampler(
         seed=42,
-        n_startup_trials=20,   # exploration aléatoire avant de fitter le modèle
-        multivariate=True,     # capture les corrélations entre paramètres
-        constant_liar=True,    # réduit les collisions en parallèle
+        n_startup_trials=20,
+        multivariate=True,
+        constant_liar=True,
     )
 
     study = optuna.create_study(
         study_name="mm_calibration_v1",
         direction="minimize",
         sampler=sampler,
-        # storage="sqlite:///mm_optim.db",   # reprise automatique si crash
-        # load_if_exists=True,
     )
-
-    # # Injection de contraintes dans le sampler
-    # study.sampler = optuna.samplers.TPESampler(
-    #     seed=42,
-    #     multivariate=True,
-    #     constant_liar=True,
-    #     constraints_func=lambda t: t.user_attrs.get("constraints", [0.0, 0.0])
-    # )
 
     study.optimize(
         objective,
         n_trials=50,
-        n_jobs=1,           # 4 simulations en parallèle
+        n_jobs=1,
         callbacks=[logging_callback],
         gc_after_trial=True,
     )
 
-    # ── Résultats ──────────────────────────────────────────────────
+    #Results 
     print("\n=== Best Params ===")
     print(study.best_params)
     print(f"Sharpe optimal : {-study.best_value:.4f}")
@@ -161,9 +149,6 @@ if __name__ == "__main__":
         gamma=best_params["gamma"],
         kappa=best_params["kappa"],
         hedge_threshold=HEDGE_THRESHOLD,
-        # delta_grid=best_params["delta_grid"],
-        # geo_increment=best_params["geo_increment"],
-        # qty_alpha=best_params["qty_alpha"],
         delta_grid=DEFAULT_TICK_SIZE,
         geo_increment=DEFAULT_GEO_INCREMENT,
         qty_alpha=DEFAULT_GEO_QTY_ALPHA,

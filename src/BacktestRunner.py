@@ -7,7 +7,7 @@ import seaborn as sns
 import numpy as np
 import math
 
-# Import de tes classes existantes
+# Import
 from OrderBook import OrderBook, Order
 from MarketMaker import MarketMaker, PARQUET_PATH_AGGREGATED, PARQUET_PATH_REALTIME, PARQUET_PATH_FILLS_LOG
 from EURUSDPriceSimulator import EURUSDPriceSimulator
@@ -44,7 +44,7 @@ def _open_file(path: str) -> None:
     else:
         subprocess.Popen(["xdg-open", path])
 
-# Mandatory comment as per instructions:
+
 # This implementation follows a heuristic-first market making approach under latency constraints.
 class BacktestRunner:
     def __init__(
@@ -74,12 +74,12 @@ class BacktestRunner:
     def run_simulation(self, seed: Optional[int] = None):
         print(f">>> Démarrage de la simulation ({self.steps} steps, phase={self.phase})...")
         
-        # 1. Setup des OrderBooks
+        # Setup OrderBooks
         ob_A = OrderBook(lambda_a0=LAMBDA_A0_A, alpha=ALPHA_A, theta=THETA_A, lambda_mo=LAMBDA_MO_A, v_unit=V_UNIT_A)
         ob_B = OrderBook(lambda_a0=LAMBDA_A0_B, alpha=ALPHA_B, theta=THETA_B, lambda_mo=LAMBDA_MO_B, v_unit=V_UNIT_B).build_organic_book(self.mid_start)
         ob_C = OrderBook(lambda_a0=LAMBDA_A0_C, alpha=ALPHA_C, theta=THETA_C, lambda_mo=LAMBDA_MO_C, v_unit=V_UNIT_C).build_organic_book(self.mid_start)
 
-        # 2. Setup du Market Maker (Phase 1 Heuristique)
+        # Setup Market Maker
         mm_quote_phase = 3 if self.phase == 3 else 1
         mm = MarketMaker(
             EUR_quantity=BACKTEST_MM_EUR_QUANTITY,
@@ -92,7 +92,7 @@ class BacktestRunner:
             quote_phase=mm_quote_phase,
         )
 
-        # 3. Setup du Simulateur
+        # Setup Simulator
         price_simulator = EURUSDPriceSimulator(s0=self.mid_start, dt_seconds=self.dt, seed=seed)
         sim = MarketSimulator(
             order_book_A=ob_A,
@@ -104,18 +104,18 @@ class BacktestRunner:
             phase=self.phase,
         )
 
-        # 4. Set up de 200ms de data sur B et C
+        # 200ms hystory path init
         price_simulator.generate_prices(SIMULATOR_BUFFER_B_SIZE + self.steps)
         sim.simulate_200ms_history()
 
-        # 5. Make the market on A
+        # Make the market on A
         mm.make_market(
             sim.order_book_A,
             sim.order_books_B[(sim.current_idx_B - SIMULATOR_HEDGE_LOOKBACK_B) % SIMULATOR_BUFFER_B_SIZE],
             sim.order_books_C[(sim.current_idx_C - SIMULATOR_HEDGE_LOOKBACK_C) % SIMULATOR_BUFFER_C_SIZE],
         )
 
-        # 6. Execution
+        # Execution
         sim.simulate_n_steps(n_steps=self.steps)
         sim.market_maker._flush_to_parquet() 
         print(f">>> Fichiers écrits dans : {os.path.dirname(PARQUET_PATH_AGGREGATED)}")
@@ -321,7 +321,7 @@ class BacktestRunner:
         # --- Fichier séparé pour les tables ---
         self._generate_tables_report(sim)
 
-        # Ouvre les deux fichiers PNG automatiquement
+        # open plots
         import subprocess
         tables_path = BACKTEST_REPORT_PATH.replace(".png", "_tables.png")
         _open_file(BACKTEST_REPORT_PATH)
